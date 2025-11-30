@@ -1,0 +1,133 @@
+2025-11-30 11:37:40,837 [INFO] Starting MTGA bot with config at config.json
+2025-11-30 11:37:40,837 [INFO] Using configured log path: /home/barrylim/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log
+2025-11-30 11:37:46,839 [DEBUG] Unparsed log line (idle): Could not find BladeQueueInfo for QueueType: Ranked
+2025-11-30 11:37:46,839 [DEBUG] Unparsed log line (idle): Can't find pet for deck Goblins Everywhere! (4792e924-c693-4b06-b4e7-31bfeedd610d)
+2025-11-30 11:37:47,839 [DEBUG] Unparsed log line (idle): Unloading 4 Unused Serialized files (Serialized files now loaded: 256)
+2025-11-30 11:37:47,839 [DEBUG] Unparsed log line (idle): Unloading 7499 unused Assets to reduce memory usage. Loaded Objects now: 24986.
+2025-11-30 11:37:47,839 [DEBUG] Unparsed log line (idle): Total: 53.109400 ms (FindLiveObjects: 1.659200 ms CreateObjectMapping: 0.910100 ms MarkObjects: 46.533900 ms  DeleteObjects: 4.005200 ms)
+2025-11-30 11:37:49,840 [DEBUG] Event: LogEvent(event_type=<EventType.QUEUE_ENTERED: 6>, payload={'state': 'ConnectedToMatchDoor_ConnectingToGRE'})
+2025-11-30 11:37:49,840 [INFO] Action: ActionType.WAIT (Waiting for opponent)
+2025-11-30 11:37:50,574 [DEBUG] Event: LogEvent(event_type=<EventType.QUEUE_ENTERED: 6>, payload={'state': 'ConnectedToMatchDoor_ConnectedToGRE_Waiting'})
+2025-11-30 11:37:50,574 [INFO] Action: ActionType.WAIT (Waiting for opponent)
+2025-11-30 11:37:51,152 [DEBUG] Event: LogEvent(event_type=<EventType.MATCH_START: 4>, payload={'state': 'Playing'})
+2025-11-30 11:37:51,152 [INFO] Action: ActionType.KEEP_HAND (Keep opening hand once per match)
+2025-11-30 11:37:51,903 [DEBUG] ydotool click failed at (1719.0,281.0): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1719', '281']' returned non-zero exit status 2.
+2025-11-30 11:37:52,581 [DEBUG] Keep-hand attempt 1/10
+2025-11-30 11:37:52,582 [DEBUG] ydotool click failed at (2922.0,1345.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2922', '1345']' returned non-zero exit status 2.
+2025-11-30 11:37:52,967 [DEBUG] ydotool click failed at (2235.0,1238.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2235', '1238']' returned non-zero exit status 2.
+2025-11-30 11:37:53,534 [DEBUG] ydotool click failed at (1988.1999999999998,1193.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1988', '1193']' returned non-zero exit status 2.
+2025-11-30 11:37:54,058 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 11:37:54,463 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 11:37:55,331 [DEBUG] Keep-hand attempt 2/10
+2025-11-30 11:37:55,332 [DEBUG] ydotool click failed at (2915.0,1340.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2915', '1340']' returned non-zero exit status 2.
+2025-11-30 11:37:55,825 [DEBUG] ydotool click failed at (2246.0,1240.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2246', '1240']' returned non-zero exit status 2.
+2025-11-30 11:37:56,487 [DEBUG] ydotool click failed at (1987.1999999999998,1191.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1987', '1191']' returned non-zero exit status 2.
+2025-11-30 11:37:57,005 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 11:37:57,692 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 11:37:58,736 [DEBUG] Keep-hand attempt 3/10
+2025-11-30 11:37:58,736 [DEBUG] ydotool click failed at (2932.0,1343.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2932', '1343']' returned non-zero exit status 2.
+2025-11-30 11:37:59,148 [DEBUG] ydotool click failed at (2244.0,1241.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2244', '1241']' returned non-zero exit status 2.
+2025-11-30 11:37:59,646 [DEBUG] ydotool click failed at (1988.1999999999998,1201.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1988', '1201']' returned non-zero exit status 2.
+2025-11-30 11:38:00,321 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 11:38:00,963 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 11:38:01,885 [DEBUG] Keep-hand attempt 4/10
+2025-11-30 11:38:01,886 [DEBUG] ydotool click failed at (2934.0,1334.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2934', '1334']' returned non-zero exit status 2.
+2025-11-30 11:38:02,295 [DEBUG] ydotool click failed at (2246.0,1232.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2246', '1232']' returned non-zero exit status 2.
+2025-11-30 11:38:02,925 [DEBUG] ydotool click failed at (2000.1999999999998,1195.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2000', '1195']' returned non-zero exit status 2.
+2025-11-30 11:38:03,637 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 11:38:04,376 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 11:38:05,333 [DEBUG] Keep-hand attempt 5/10
+2025-11-30 11:38:05,334 [DEBUG] ydotool click failed at (2933.0,1330.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2933', '1330']' returned non-zero exit status 2.
+2025-11-30 11:38:05,782 [DEBUG] ydotool click failed at (2246.0,1234.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2246', '1234']' returned non-zero exit status 2.
+2025-11-30 11:38:06,384 [DEBUG] ydotool click failed at (1990.1999999999998,1187.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1990', '1187']' returned non-zero exit status 2.
+2025-11-30 11:38:07,088 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 11:38:07,503 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 11:38:08,272 [DEBUG] Keep-hand attempt 6/10
+2025-11-30 11:38:08,273 [DEBUG] ydotool click failed at (2914.0,1346.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2914', '1346']' returned non-zero exit status 2.
+2025-11-30 11:38:09,004 [DEBUG] ydotool click failed at (2240.0,1238.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2240', '1238']' returned non-zero exit status 2.
+2025-11-30 11:38:09,544 [DEBUG] ydotool click failed at (1986.1999999999998,1193.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1986', '1193']' returned non-zero exit status 2.
+2025-11-30 11:38:09,934 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 11:38:10,684 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:11,260 [INFO] Starting MTGA bot with config at config.json
+2025-11-30 14:16:11,260 [INFO] Using configured log path: /home/barrylim/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log
+2025-11-30 14:16:14,262 [DEBUG] Unparsed log line (idle): Could not find BladeQueueInfo for QueueType: Ranked
+2025-11-30 14:16:14,262 [DEBUG] Unparsed log line (idle): Can't find pet for deck Goblins Everywhere! (4792e924-c693-4b06-b4e7-31bfeedd610d)
+2025-11-30 14:16:15,262 [DEBUG] Unparsed log line (idle): Unloading 4 Unused Serialized files (Serialized files now loaded: 266)
+2025-11-30 14:16:15,262 [DEBUG] Unparsed log line (idle): Unloading 7487 unused Assets to reduce memory usage. Loaded Objects now: 24574.
+2025-11-30 14:16:15,262 [DEBUG] Unparsed log line (idle): Total: 67.715100 ms (FindLiveObjects: 1.710700 ms CreateObjectMapping: 1.474800 ms MarkObjects: 60.669500 ms  DeleteObjects: 3.859400 ms)
+2025-11-30 14:16:17,262 [DEBUG] Event: LogEvent(event_type=<EventType.QUEUE_ENTERED: 6>, payload={'state': 'ConnectedToMatchDoor_ConnectingToGRE'})
+2025-11-30 14:16:17,263 [INFO] Action: ActionType.WAIT (Waiting for opponent)
+2025-11-30 14:16:17,697 [DEBUG] Event: LogEvent(event_type=<EventType.QUEUE_ENTERED: 6>, payload={'state': 'ConnectedToMatchDoor_ConnectedToGRE_Waiting'})
+2025-11-30 14:16:17,697 [INFO] Action: ActionType.WAIT (Waiting for opponent)
+2025-11-30 14:16:18,251 [DEBUG] Event: LogEvent(event_type=<EventType.MATCH_START: 4>, payload={'state': 'Playing'})
+2025-11-30 14:16:18,251 [INFO] Action: ActionType.KEEP_HAND (Keep opening hand once per match)
+2025-11-30 14:16:19,001 [DEBUG] ydotool click failed at (1724.0,292.0): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1724', '292']' returned non-zero exit status 2.
+2025-11-30 14:16:19,554 [DEBUG] Keep-hand attempt 1/10
+2025-11-30 14:16:19,555 [DEBUG] ydotool click failed at (2924.0,1342.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2924', '1342']' returned non-zero exit status 2.
+2025-11-30 14:16:20,271 [DEBUG] ydotool click failed at (2243.0,1245.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2243', '1245']' returned non-zero exit status 2.
+2025-11-30 14:16:20,794 [DEBUG] ydotool click failed at (2000.1999999999998,1194.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2000', '1194']' returned non-zero exit status 2.
+2025-11-30 14:16:21,408 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:22,088 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:23,137 [DEBUG] Keep-hand attempt 2/10
+2025-11-30 14:16:23,138 [DEBUG] ydotool click failed at (2928.0,1335.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2928', '1335']' returned non-zero exit status 2.
+2025-11-30 14:16:23,839 [DEBUG] ydotool click failed at (2235.0,1233.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2235', '1233']' returned non-zero exit status 2.
+2025-11-30 14:16:24,295 [DEBUG] ydotool click failed at (2003.1999999999998,1202.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2003', '1202']' returned non-zero exit status 2.
+2025-11-30 14:16:24,969 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:25,349 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:26,167 [DEBUG] Keep-hand attempt 3/10
+2025-11-30 14:16:26,168 [DEBUG] ydotool click failed at (2918.0,1340.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2918', '1340']' returned non-zero exit status 2.
+2025-11-30 14:16:26,919 [DEBUG] ydotool click failed at (2229.0,1240.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2229', '1240']' returned non-zero exit status 2.
+2025-11-30 14:16:27,341 [DEBUG] ydotool click failed at (1989.1999999999998,1198.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1989', '1198']' returned non-zero exit status 2.
+2025-11-30 14:16:27,918 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:28,459 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:29,267 [DEBUG] Keep-hand attempt 4/10
+2025-11-30 14:16:29,268 [DEBUG] ydotool click failed at (2919.0,1335.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2919', '1335']' returned non-zero exit status 2.
+2025-11-30 14:16:29,994 [DEBUG] ydotool click failed at (2246.0,1237.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2246', '1237']' returned non-zero exit status 2.
+2025-11-30 14:16:30,461 [DEBUG] ydotool click failed at (1999.1999999999998,1199.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1999', '1199']' returned non-zero exit status 2.
+2025-11-30 14:16:31,080 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:31,696 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:32,778 [DEBUG] Keep-hand attempt 5/10
+2025-11-30 14:16:32,779 [DEBUG] ydotool click failed at (2925.0,1338.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2925', '1338']' returned non-zero exit status 2.
+2025-11-30 14:16:33,428 [DEBUG] ydotool click failed at (2234.0,1232.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2234', '1232']' returned non-zero exit status 2.
+2025-11-30 14:16:34,056 [DEBUG] ydotool click failed at (1992.1999999999998,1198.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1992', '1198']' returned non-zero exit status 2.
+2025-11-30 14:16:34,670 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:35,046 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:35,877 [DEBUG] Keep-hand attempt 6/10
+2025-11-30 14:16:35,878 [DEBUG] ydotool click failed at (2921.0,1334.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2921', '1334']' returned non-zero exit status 2.
+2025-11-30 14:16:36,359 [DEBUG] ydotool click failed at (2236.0,1244.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2236', '1244']' returned non-zero exit status 2.
+2025-11-30 14:16:36,745 [DEBUG] ydotool click failed at (1992.1999999999998,1202.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1992', '1202']' returned non-zero exit status 2.
+2025-11-30 14:16:37,326 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:38,050 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:38,962 [DEBUG] Keep-hand attempt 7/10
+2025-11-30 14:16:38,963 [DEBUG] ydotool click failed at (2918.0,1329.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2918', '1329']' returned non-zero exit status 2.
+2025-11-30 14:16:39,383 [DEBUG] ydotool click failed at (2231.0,1231.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2231', '1231']' returned non-zero exit status 2.
+2025-11-30 14:16:40,057 [DEBUG] ydotool click failed at (2000.1999999999998,1203.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2000', '1203']' returned non-zero exit status 2.
+2025-11-30 14:16:40,613 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:41,180 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:41,979 [DEBUG] Keep-hand attempt 8/10
+2025-11-30 14:16:41,980 [DEBUG] ydotool click failed at (2926.0,1339.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2926', '1339']' returned non-zero exit status 2.
+2025-11-30 14:16:42,758 [DEBUG] ydotool click failed at (2243.0,1235.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2243', '1235']' returned non-zero exit status 2.
+2025-11-30 14:16:43,451 [DEBUG] ydotool click failed at (1999.1999999999998,1186.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1999', '1186']' returned non-zero exit status 2.
+2025-11-30 14:16:44,137 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:44,878 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:45,950 [DEBUG] Keep-hand attempt 9/10
+2025-11-30 14:16:45,951 [DEBUG] ydotool click failed at (2918.0,1336.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2918', '1336']' returned non-zero exit status 2.
+2025-11-30 14:16:46,536 [DEBUG] ydotool click failed at (2237.0,1237.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2237', '1237']' returned non-zero exit status 2.
+2025-11-30 14:16:46,931 [DEBUG] ydotool click failed at (1987.1999999999998,1192.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1987', '1192']' returned non-zero exit status 2.
+2025-11-30 14:16:47,541 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:48,003 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:48,868 [DEBUG] Keep-hand attempt 10/10
+2025-11-30 14:16:48,869 [DEBUG] ydotool click failed at (2917.0,1336.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2917', '1336']' returned non-zero exit status 2.
+2025-11-30 14:16:49,429 [DEBUG] ydotool click failed at (2234.0,1243.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2234', '1243']' returned non-zero exit status 2.
+2025-11-30 14:16:49,990 [DEBUG] ydotool click failed at (1993.1999999999998,1195.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1993', '1195']' returned non-zero exit status 2.
+2025-11-30 14:16:50,681 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:51,137 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
+2025-11-30 14:16:51,903 [DEBUG] Event: LogEvent(event_type=<EventType.MATCH_START: 4>, payload={'scene': 'battlefield_woe'})
+2025-11-30 14:16:51,903 [INFO] Action: ActionType.KEEP_HAND (Accept starting hand by default)
+2025-11-30 14:16:52,504 [DEBUG] ydotool click failed at (1719.0,293.0): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1719', '293']' returned non-zero exit status 2.
+2025-11-30 14:16:52,959 [DEBUG] Keep-hand attempt 1/10
+2025-11-30 14:16:52,960 [DEBUG] ydotool click failed at (2925.0,1337.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2925', '1337']' returned non-zero exit status 2.
+2025-11-30 14:16:53,563 [DEBUG] ydotool click failed at (2235.0,1228.4): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '2235', '1228']' returned non-zero exit status 2.
+2025-11-30 14:16:54,034 [DEBUG] ydotool click failed at (1988.1999999999998,1201.2): Command '['/usr/bin/ydotool', 'mousemove', '--absolute', '1988', '1201']' returned non-zero exit status 2.
+2025-11-30 14:16:54,616 [DEBUG] ydotool key failed for space (57): Command '['/usr/bin/ydotool', 'key', '57:1', '57:0']' returned non-zero exit status 2.
+2025-11-30 14:16:55,036 [DEBUG] ydotool key failed for enter (28): Command '['/usr/bin/ydotool', 'key', '28:1', '28:0']' returned non-zero exit status 2.
