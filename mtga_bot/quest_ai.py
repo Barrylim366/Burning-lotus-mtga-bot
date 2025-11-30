@@ -10,6 +10,7 @@ from .game_model import GameState, MatchPhase, QuestProgress
 class ActionType(str, Enum):
     QUEUE_FOR_MATCH = "queue_for_match"
     KEEP_HAND = "keep_hand"
+    PLAY_LAND = "play_land"
     CAST_SPELL = "cast_spell"
     ATTACK_ALL = "attack_all"
     SURRENDER = "surrender"
@@ -45,8 +46,12 @@ class PlayGamesStrategy(BaseStrategy):
             # Simple flow: keep hand → try to play/cast → attack → optionally exit later.
             if state.turn == 0:
                 return Action(ActionType.KEEP_HAND, reason="Accept starting hand by default")
-            if state.turn <= 2:
-                return Action(ActionType.CAST_SPELL, reason="Play first card from hand")
+            lands_in_hand = int((state.hand_info or {}).get("lands", 0))
+            if lands_in_hand > 0 and state.turn <= 3:
+                return Action(ActionType.PLAY_LAND, reason="Play a land early")
+            cheapest_spell = (state.hand_info or {}).get("cheapest_spell")
+            if isinstance(cheapest_spell, int) and cheapest_spell <= max(1, state.turn):
+                return Action(ActionType.CAST_SPELL, reason="Cast cheapest spell available")
             if state.turn >= 4:
                 return Action(ActionType.SURRENDER, reason="Exit to speed up quest completion")
             return Action(ActionType.ATTACK_ALL, reason="Progress quest by attacking with all")
@@ -70,6 +75,16 @@ class CastSpellsStrategy(BaseStrategy):
                 return Action(ActionType.WAIT, reason="Give client a moment to load the battlefield")
             if quest and quest.progress >= quest.goal - 1:
                 return Action(ActionType.SURRENDER, reason="Quest nearly done; exit early to save time")
+            lands_in_hand = int((state.hand_info or {}).get("lands", 0))
+            if lands_in_hand > 0 and state.turn <= 3:
+                return Action(ActionType.PLAY_LAND, reason="Play land to enable spells")
+            cheapest_spell = (state.hand_info or {}).get("cheapest_spell")
+            if isinstance(cheapest_spell, int) and cheapest_spell > 0:
+                return Action(
+                    ActionType.CAST_SPELL,
+                    details={"color": self.preferred_color, "mana_value": cheapest_spell},
+                    reason="Cast cheapest spell to advance quest",
+                )
             return Action(
                 ActionType.CAST_SPELL,
                 details={"color": self.preferred_color},

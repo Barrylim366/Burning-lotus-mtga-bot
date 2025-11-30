@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from .game_model import GameState, MatchPhase
-from .log_parser import LogParser
+from .log_parser import EventType, LogParser
 from .quest_ai import Action, ActionType, QuestAI
+from .card_db import CardDatabase
 from .strategies import MonoRedAggroStrategy
 from .ui_controller import UIController
 
@@ -109,12 +110,25 @@ def run_bot(config_path: Path) -> None:
         logger.warning("Log file does not exist yet: %s (will wait for MTGA to create it)", log_path)
 
     log_parser = LogParser(str(log_path))
+    cards_path = Path(config.get("cards_path", "cards.json")).expanduser()
+    card_db: Optional[CardDatabase] = None
+    if cards_path.exists():
+        try:
+            card_db = CardDatabase(cards_path)
+            logger.info("Loaded card database from %s", cards_path)
+        except Exception as exc:
+            logger.warning("Could not load card database at %s: %s", cards_path, exc)
+    else:
+        logger.warning("Card database not found at %s; hand cost checks disabled", cards_path)
+
     game_state = GameState()
+    game_state.card_db = card_db
     ui_controller = UIController(
         image_dir=config.get("image_dir"),
         dry_run=config.get("dry_run", True),
         confidence=float(config.get("image_confidence", 0.9)),
         click_region=parse_click_region(config),
+        user_mouse_pause_seconds=float(config.get("user_mouse_pause_seconds", 7.0)),
     )
     default_strategy = config.get("default_strategy") or config.get("deck_strategy") or "play_games"
     quest_ai = QuestAI(default_color=load_deck_color(config), default_strategy=default_strategy)
@@ -139,6 +153,14 @@ def run_bot(config_path: Path) -> None:
                 logger.debug("Event: %s", event)
 
             game_state.apply_event(event)
+            if event.event_type == EventType.HAND_UPDATE:
+                summary = game_state.hand_info or {}
+                logger.info(
+                    "Hand update: %s cards, %s lands, cheapest spell: %s",
+                    summary.get("total_cards", "?"),
+                    summary.get("lands", "?"),
+                    summary.get("cheapest_spell", "unknown"),
+                )
             action = quest_ai.get_action(game_state)
             if action:
                 logger.info("Action: %s (%s)", action.action_type, action.reason)

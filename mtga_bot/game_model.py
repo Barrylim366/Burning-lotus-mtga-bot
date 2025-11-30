@@ -5,6 +5,10 @@ from enum import Enum
 from typing import Dict, List, Optional
 
 from .log_parser import EventType, LogEvent
+try:  # Optional import to avoid cycles when running minimal tests without cards.
+    from .card_db import CardDatabase
+except Exception:  # pragma: no cover
+    CardDatabase = None  # type: ignore[misc,assignment]
 
 
 class MatchPhase(str, Enum):
@@ -44,6 +48,9 @@ class GameState:
     turn: int = 0
     match_id: Optional[str] = None
     hand_kept: bool = False
+    hand_cards: List[int] = field(default_factory=list)
+    hand_info: Dict[str, object] = field(default_factory=dict)
+    card_db: Optional["CardDatabase"] = None
 
     def apply_event(self, event: LogEvent) -> None:
         """Update internal state based on a parsed log event."""
@@ -78,6 +85,11 @@ class GameState:
             self.turn = 0
             self.match_id = None
             self.hand_kept = False
+        elif event.event_type == EventType.HAND_UPDATE:
+            grp_ids = event.payload.get("grp_ids")
+            if grp_ids:
+                self.hand_cards = list(map(int, grp_ids))
+                self._summarize_hand()
 
     def _apply_quest_update(self, event: LogEvent) -> None:
         quest_id = str(event.payload.get("quest_id"))
@@ -103,3 +115,13 @@ class GameState:
 
     def is_idle(self) -> bool:
         return self.phase == MatchPhase.IDLE
+
+    def _summarize_hand(self) -> None:
+        """Enrich hand_info using the optional card database."""
+        if not self.card_db or not hasattr(self.card_db, "summarize_hand"):
+            self.hand_info = {"total_cards": len(self.hand_cards)}
+            return
+        try:
+            self.hand_info = self.card_db.summarize_hand(self.hand_cards)
+        except Exception:
+            self.hand_info = {"total_cards": len(self.hand_cards)}

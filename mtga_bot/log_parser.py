@@ -18,6 +18,7 @@ class EventType(Enum):
     QUEUE_ENTERED = auto()
     QUEUE_EXITED = auto()
     ERROR = auto()
+    HAND_UPDATE = auto()
 
 
 @dataclass
@@ -52,6 +53,11 @@ class LogParser:
             r"STATE CHANGED.*\"new\":\"(?P<new_state>[^\"]+)\"", re.IGNORECASE
         )
         self._scene_loaded_pattern = re.compile(r"OnSceneLoaded for (?P<scene>\w+)", re.IGNORECASE)
+        self._hand_zone_pattern = re.compile(
+            r"(Zone_Hand|\"zone\"\\?\":\\?\"hand\\?\"|\"zoneType\"\\?\":\\?\"ZoneType_Hand\\?\"|\"hand\"\\?:)",
+            re.IGNORECASE,
+        )
+        self._grp_id_pattern = re.compile(r'"grpId"\\?":\\?(\d+)')
 
     def follow(self, poll_interval: float = 1.0, yield_unparsed: bool = False) -> Generator[LogEvent, None, None]:
         """
@@ -96,6 +102,12 @@ class LogParser:
         if quest_complete_match:
             payload = {"quest_id": quest_complete_match.group("quest_id")}
             return LogEvent(EventType.QUEST_COMPLETE, payload)
+
+        # Capture hand composition updates (grpIds inside hand zone payloads).
+        if self._hand_zone_pattern.search(text):
+            grp_ids = [int(g) for g in self._grp_id_pattern.findall(text)]
+            if grp_ids:
+                return LogEvent(EventType.HAND_UPDATE, {"grp_ids": grp_ids})
 
         turn_match = self._turn_pattern.search(text)
         if turn_match:

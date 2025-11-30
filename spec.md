@@ -1,26 +1,27 @@
-Prompt:
-"Erstelle einen erweiterbaren Python-Bot für Magic: The Gathering Arena (MTG Arena), der automatisch tägliche Quests erledigt, ähnlich wie im GitHub-Repo https://github.com/misprit7/MTGAI. Der Bot soll modular aufgebaut sein, um später komplexe Features wie das Spielen mit verschiedenen Decks, adaptive AI-Entscheidungen oder Multi-Account-Support hinzuzufügen.
-Kernanforderungen:
+## Projekt-Spezifikation (aktueller Stand)
 
-Ziel: Der Bot startet MTG Arena, wählt ein einfaches Deck (z. B. ein Mono-Color-Deck für Quests wie 'Spiele 4 Spiele' oder 'Wirke 10 Zauber einer Farbe'), spielt minimale Spiele, um Quests abzuschließen, und beendet sich sicher. Vermeide vollständige AI-Spielsimulation zunächst – fokussiere auf UI-Automatisierung und grundlegende Entscheidungen (z. B. 'Mulligan nie', 'Immer angreifen', 'Einfache Zauber wirken').
-Modularität (inspiriert von MTGAI): Strukturiere den Code in separate Module für einfache Erweiterung:
-Log Parser (log_parser.py): Lies Echtzeit-Logs aus %APPDATA%\..\LocalLow\Wizards Of The Coast\MTGA\Player.log. Parse Game-State (z. B. Quest-Fortschritt, Phase des Spiels, Mana-Verfügbarkeit). Verwende Regex oder eine Library wie re für Events wie 'Quest updated' oder 'Turn begin'.
-Game Model (game_model.py): Ein State-Machine-ähnliches Modell (z. B. Klasse GameState), das den aktuellen Spielzustand trackt (z. B. 'In Queue', 'Playing', 'Quest Complete'). Integriere Quest-Tracking (z. B. Dict mit Quest-ID und Fortschritt).
-Quest AI (quest_ai.py): Einfache Entscheidungslogik für Quests. Z. B. Funktion get_action(state) die basierend auf Quest-Typ (z. B. 'Play X Games' → Queue und Surrender nach X Zügen; 'Cast Y Spells' → Priorisiere Zauber-Wirken). Mach es erweiterbar: Verwende eine Strategy-Pattern-Klasse, die später für Deck-spezifische AIs erweitert werden kann (z. B. DeckStrategy mit Subklassen pro Deck).
-UI Controller (ui_controller.py): Verwende pyautogui für Bildschirm-Interaktionen (z. B. Klicks auf 'Queue', 'Surrender', Drag-and-Drop für Karten). Inkludiere Bilderkennung mit opencv-python oder pyautogui.locateOnScreen für UI-Elemente (z. B. suche nach Quest-Icons). Füge Pausen und Randomisierung hinzu, um Bans zu vermeiden.
-Main Bot (main.py): Koordiniert alles: Starte mit Config-Laden (z. B. aus config.json mit Username, Log-Pfad, Deck-ID), loop über Quest-Check, führe Aktionen aus, logge Fortschritt. Inkludiere Error-Handling (z. B. bei Disconnects) und Graceful Shutdown (z. B. via KeyboardInterrupt).
+Ein modularer Python-Bot für Magic: The Gathering Arena, fokussiert auf tägliche Quests. Architektur orientiert sich an MTGAI, bleibt aber leicht erweiterbar für neue Deck-Strategien oder Quest-Typen.
 
-Erweiterbarkeit priorisieren:
-Verwende abstrakte Basisklassen (z. B. BaseAI für zukünftige Deck-AIs).
-Konfiguriere Decks in JSON (z. B. decks.json mit Deck-Namen, Farben, Strategien).
-Mach den Quest-Tracker skalierbar für Weekly Quests oder Events.
-Füge Hooks für Plugins hinzu (z. B. register_strategy() Funktion).
+### Architektur
+- `log_parser.py`: Tailed `Player.log`, liefert strukturierte Events (Quests, Queue/Mitreinkommen, Match-Start/-Ende, Turn, Hand-Updates über grpIds). Heuristik klassifiziert Quests in `play_games`, `cast_spells`, `combat`.
+- `game_model.py`: `GameState` als einfache State-Machine (Phasen idle/queued/in_match/exiting), Quest-Fortschritt (`QuestProgress`), Turn-Zähler, Hand-Zusammenfassung optional via `card_db`. Tracking von Hand-Kept, Match-ID, aktiven Quests.
+- `quest_ai.py`: Strategy-Pattern mit Default-Strategien:
+  - `play_games`: queue → keep hand → einfache Land/Spell/Attack-Flows, ggf. surrender ab Turn 4.
+  - `cast_spells`: priorisiert Spell-Casts (mit Farbhinweis), surrender kurz vor Abschluss.
+  - `combat`: bevorzugt Attack-All.
+  - Plugin-Hook `register_strategy` für weitere Deck/Quest-Strategien; `MonoRedAggroStrategy` als Beispiel in `strategies.py`.
+- `ui_controller.py`: Wrapper um `pyautogui`, optional `ydotool` auf Wayland. Features: Dry-Run-Modus (default), Bildsuche für benannte Targets (`image_dir`), relative Klick-Heuristiken, leichte Randomisierung, Tastenevents, Land/Spell/Attack-Flows. Erkennt manuelle Mausbewegung und pausiert Bot-Aktionen für konfigurierbare 7s. Unterstützt `click_region` für fenstergebundene Koordinaten.
+- `main.py`: Lädt Config, Karten-DB (optional), Decks, initialisiert `GameState`, `QuestAI`, `UIController`. Folgt Logs in einer Schleife, wendet Events auf den State an, wählt Actions aus der AI, führt sie über UI aus. Fallback: erzwingt Keep-Hand nach Queue-Timer.
 
+### Konfiguration (siehe `config.example.json`)
+- Wichtige Felder: `log_path`, `player_name`, `default_deck`, `deck_strategy`, `default_strategy`, `default_color`, `image_dir`, `dry_run`, `poll_interval`, `image_confidence`, `decks_path`, `log_level`, `click_region` (optional), `cards_path` (optional), `user_mouse_pause_seconds` (Standard 7.0s).
+- Deck-Definitionen in `decks.example.json`; Karten-DB optional über `cards.json` zur Handbewertung.
 
-Technische Details:
+### Ausführung und Tests
+- Start: `python -m mtga_bot.main --config config.json` (Dry-Run standardmäßig aktiv, für echte Eingaben `dry_run: false` setzen).
+- Tests: `python -m unittest` (Parser/GameState-Abdeckung).
 
-Python 3.10+, Dependencies: pyautogui, opencv-python, pynput (für Input-Überwachung), json (built-in).
-Erstelle eine requirements.txt.
-Inkludiere eine config.json-Vorlage mit Feldern wie "log_path", "player_name", "default_deck": "mono_red".
-Testbarkeit: Füge Unit-Tests für Parser und Model (z. B. mit unittest).
-wenn dir besser lösungen einfallen fühle dich frei diese zu verwenden
+### Erweiterbarkeit / TODO
+- Weitere Deck-Strategien per `register_strategy`.
+- Feinere UI-Bildtargets und regionspezifische Klicks.
+- Bessere Quest-Klassifizierung und Multi-Quest-Priorisierung.

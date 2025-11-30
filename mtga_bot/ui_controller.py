@@ -26,6 +26,7 @@ class UIController:
         confidence: float = 0.9,
         pause_range: tuple[float, float] = (0.35, 0.75),
         click_region: Optional[tuple[int, int, int, int]] = None,
+        user_mouse_pause_seconds: float = 7.0,
     ) -> None:
         self.image_dir = Path(image_dir) if image_dir else None
         self.dry_run = dry_run
@@ -37,15 +38,23 @@ class UIController:
         self._pyautogui = None
         self._ydotool = shutil.which("ydotool") if shutil.which("ydotool") else None
         self._use_ydotool = self._ydotool is not None
+        self._last_known_mouse_pos: Optional[tuple[int, int]] = None
+        self._last_bot_move_time: float = 0.0
+        self._user_pause_until: float = 0.0
+        self._user_pause_seconds = float(user_mouse_pause_seconds)
+        self._bot_move_grace = 0.4
 
     def perform(self, action: Action) -> None:
         """Dispatch an Action to the appropriate UI gesture."""
+        self._maybe_pause_for_user_mouse()
         if action.action_type == ActionType.QUEUE_FOR_MATCH:
             self.click_named_target("queue_button")
         elif action.action_type == ActionType.KEEP_HAND:
             self.confirm_keep_hand()
         elif action.action_type == ActionType.ATTACK_ALL:
             self.press_key("a")  # MTGA default "attack with all"
+        elif action.action_type == ActionType.PLAY_LAND:
+            self.play_land()
         elif action.action_type == ActionType.CAST_SPELL:
             color = (action.details or {}).get("color")
             self.cast_spell(color_hint=color)
@@ -71,6 +80,7 @@ class UIController:
             return
 
         # Give the mulligan dialog a moment to appear, then focus the window.
+        self._maybe_pause_for_user_mouse()
         time.sleep(0.6)
         self._ensure_pyautogui()
         # Focus roughly center-top where the dialog sits.
@@ -101,6 +111,7 @@ class UIController:
         """
         Click a cached screenshot of a UI element if available, otherwise falls back to a generic click.
         """
+        self._maybe_pause_for_user_mouse()
         if self.dry_run:
             logger.info("[dry-run] Would click %s", target_name)
             self.sleep_briefly()
@@ -142,6 +153,7 @@ class UIController:
             return
 
         # On Wayland, pyautogui keypresses may be blocked; prefer ydotool when available.
+        self._maybe_pause_for_user_mouse()
         if self._use_ydotool and self._press_key_with_ydotool(key):
             self.sleep_briefly()
             return
@@ -156,12 +168,37 @@ class UIController:
             self.sleep_briefly()
             return
 
+        self._maybe_pause_for_user_mouse()
         # Casting is highly deck-specific; here we just click the hand area to play a card.
         self._ensure_pyautogui()
         screen_size = self._pyautogui.size()
-        x = screen_size.width * 0.6 + random.randint(-80, 80)
         y = screen_size.height * 0.85 + random.randint(-25, 25)
-        self._click_absolute(x, y)
+        # Click a couple of slots across the hand to improve reliability.
+        rel_x_choices = [0.52, 0.58, 0.64]
+        random.shuffle(rel_x_choices)
+        for rel_x in rel_x_choices[:2]:
+            x = screen_size.width * rel_x + random.randint(-40, 40)
+            self._click_absolute(x, y)
+            time.sleep(0.1)
+        self.sleep_briefly()
+
+    def play_land(self) -> None:
+        if self.dry_run:
+            logger.info("[dry-run] Would play a land from hand")
+            self.sleep_briefly()
+            return
+
+        self._maybe_pause_for_user_mouse()
+        # Lands usually sit on the left side of the hand; click a couple of nearby slots.
+        self._ensure_pyautogui()
+        screen_size = self._pyautogui.size()
+        y = screen_size.height * 0.84 + random.randint(-20, 20)
+        rel_x_choices = [0.38, 0.44, 0.5]
+        random.shuffle(rel_x_choices)
+        for rel_x in rel_x_choices[:2]:
+            x = screen_size.width * rel_x + random.randint(-30, 30)
+            self._click_absolute(x, y)
+            time.sleep(0.12)
         self.sleep_briefly()
 
     def surrender(self) -> None:
@@ -170,6 +207,7 @@ class UIController:
             self.sleep_briefly()
             return
 
+        self._maybe_pause_for_user_mouse()
         # MTGA surrender is a two-step interaction: open menu then confirm concede.
         self._ensure_pyautogui()
         self.press_key("esc")
@@ -190,6 +228,7 @@ class UIController:
 
     def _click_relative(self, rel_x: float, rel_y: float) -> None:
         """Click at a relative screen position (0..1 in both axes) with slight jitter."""
+        self._maybe_pause_for_user_mouse()
         if self.click_region:
             origin_x, origin_y, width, height = self.click_region
         else:
@@ -213,6 +252,7 @@ class UIController:
 
     def _click_absolute(self, x: float, y: float) -> None:
         """Perform a left-click at absolute screen coordinates, preferring ydotool on Wayland."""
+        self._maybe_pause_for_user_mouse()
         if self._use_ydotool:
             try:
                 # Move then click left button (0x1).
@@ -228,6 +268,7 @@ class UIController:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
+                self._record_bot_mouse_position(x, y)
                 return
             except Exception as exc:  # pragma: no cover - best effort
                 logger.debug("ydotool click failed at (%s,%s): %s", x, y, exc)
@@ -238,6 +279,7 @@ class UIController:
         self._pyautogui.mouseDown()
         time.sleep(0.03)
         self._pyautogui.mouseUp()
+        self._record_bot_mouse_position(x, y)
 
     def _press_key_with_ydotool(self, key: str) -> bool:
         """
@@ -280,3 +322,41 @@ class UIController:
         except Exception as exc:  # pragma: no cover - best-effort
             logger.debug("ydotool key failed for %s (%s): %s", key, code, exc)
             return False
+
+    def _record_bot_mouse_position(self, x: float, y: float) -> None:
+        self._last_bot_move_time = time.time()
+        self._last_known_mouse_pos = (int(x), int(y))
+
+    def _maybe_pause_for_user_mouse(self) -> None:
+        """Pause UI actions if manual mouse movement is detected."""
+        while True:
+            pause_remaining = self._user_pause_remaining()
+            if pause_remaining <= 0:
+                return
+            time.sleep(pause_remaining)
+
+    def _user_pause_remaining(self) -> float:
+        now = time.time()
+        if self._user_pause_until > now:
+            return self._user_pause_until - now
+
+        try:
+            self._ensure_pyautogui()
+        except Exception:
+            return 0.0
+
+        pos = self._pyautogui.position()
+        current_pos = (int(pos.x), int(pos.y))
+        if self._last_known_mouse_pos is None:
+            self._last_known_mouse_pos = current_pos
+            return 0.0
+
+        moved = current_pos != self._last_known_mouse_pos
+        self._last_known_mouse_pos = current_pos
+
+        if moved and now - self._last_bot_move_time > self._bot_move_grace:
+            self._user_pause_until = now + self._user_pause_seconds
+            logger.info("User mouse movement detected; pausing UI actions for %.1f seconds", self._user_pause_seconds)
+            return self._user_pause_seconds
+
+        return 0.0

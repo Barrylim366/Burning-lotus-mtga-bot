@@ -28,6 +28,11 @@ Ein modularer, erweiterbarer Bot für Magic: The Gathering Arena, der sich auf t
    cp decks.example.json decks.json
    # Ergänze deine Decks/Farben.
    ```
+5. Optional: Kartendaten hinterlegen, um Handkosten zu erkennen:
+   ```bash
+   # Stelle sicher, dass cards.json lokal vorhanden ist (nicht eingecheckt).
+   # Pfad kann in config.json via "cards_path" angepasst werden.
+   ```
 
 ## Start
 ```bash

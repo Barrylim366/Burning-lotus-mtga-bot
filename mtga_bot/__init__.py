@@ -5,4 +5,5 @@ __all__ = [
     "log_parser",
     "quest_ai",
     "ui_controller",
+    "card_db",
 ]
