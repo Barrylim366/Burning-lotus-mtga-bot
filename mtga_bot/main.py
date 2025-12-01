@@ -139,7 +139,11 @@ def run_bot(config_path: Path) -> None:
         hand_x_ratios=config.get("hand_x_ratios"),
         land_y_ratio=float(config.get("land_y_ratio", 0.84)),
         land_x_ratios=config.get("land_x_ratios"),
+        cast_target_y_ratio=float(config.get("cast_target_y_ratio", 0.55)),
+        land_target_y_ratio=float(config.get("land_target_y_ratio", 0.58)),
+        prefer_double_click=bool(config.get("prefer_double_click", False)),
         use_image_search=bool(config.get("use_image_search", True)),
+        log_path=str(log_path),
     )
     default_strategy = config.get("default_strategy") or config.get("deck_strategy") or "play_games"
     quest_ai = QuestAI(default_color=load_deck_color(config), default_strategy=default_strategy)
@@ -175,6 +179,9 @@ def run_bot(config_path: Path) -> None:
                     summary.get("lands", "?"),
                     summary.get("cheapest_spell", "unknown"),
                 )
+            elif event.event_type == EventType.ACTIONS_UPDATE:
+                actions = event.payload.get("actions") or []
+                logger.debug("ACTIONS_UPDATE received (%s actions)", len(actions))
             action = quest_ai.get_action(game_state)
             # If we don't have priority (when known), avoid taking board actions.
             if action and action.action_type in {
@@ -183,7 +190,7 @@ def run_bot(config_path: Path) -> None:
                 ActionType.ATTACK_ALL,
                 ActionType.END_STEP,
             }:
-                if not game_state.has_priority():
+                if not game_state.has_soft_priority():
                     logger.debug(
                         "Skipping %s until priority is ours (priority=%s mine=%s)",
                         action.action_type,
@@ -231,8 +238,6 @@ def run_bot(config_path: Path) -> None:
                     last_keep_action = None
                     turn_fallback_done = False
                     next_action_not_before = None
-                elif action.action_type == ActionType.PLAY_LAND:
-                    game_state.last_play_land_turn = game_state.turn
                 ui_controller.perform(action)
             # Fallback: if we queued recently and never saw a mulligan keep, force it after a delay.
             if (
@@ -255,6 +260,7 @@ def run_bot(config_path: Path) -> None:
                 and last_keep_action
                 and not turn_fallback_done
                 and time.time() - last_keep_action > keep_hand_fallback_delay
+                and not game_state.has_turn_or_priority_info()
             ):
                 game_state.turn = 1
                 turn_fallback_done = True

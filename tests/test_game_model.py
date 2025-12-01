@@ -53,3 +53,31 @@ def test_hand_kept_persists_during_match_turns():
 
     assert state.phase == MatchPhase.IN_MATCH
     assert state.hand_kept
+
+
+def test_available_actions_update_and_reset():
+    state = GameState()
+    actions = [{"actionType": "ActionType_Cast", "instanceId": 111, "objectId": 222}]
+
+    state.apply_event(LogEvent(EventType.ACTIONS_UPDATE, {"actions": actions}))
+
+    assert state.available_actions
+    action = state.available_actions[0]
+    assert action.action_type == "ActionType_Cast"
+    assert action.instance_id == 111
+    assert action.object_id == 222
+
+    state.apply_event(LogEvent(EventType.MATCH_END, {"match_id": "abc"}))
+    assert state.available_actions == []
+
+
+def test_land_play_turn_updates_when_action_disappears():
+    state = GameState(phase=MatchPhase.IN_MATCH, turn=1, player_seat_id=1)
+    # Land available to play for us
+    actions = [{"actionType": "ActionType_Play", "instanceId": 200, "seatId": 1}]
+    state.apply_event(LogEvent(EventType.ACTIONS_UPDATE, {"actions": actions}))
+    assert state.last_play_land_turn == -1
+
+    # After action disappears, assume it was played
+    state.apply_event(LogEvent(EventType.ACTIONS_UPDATE, {"actions": []}))
+    assert state.last_play_land_turn == 1

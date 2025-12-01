@@ -44,6 +44,18 @@ class QuestProgress:
 
 
 @dataclass
+class AvailableAction:
+    """Minimal GRE action surface for UI targeting."""
+
+    action_type: str
+    object_id: Optional[int] = None
+    instance_id: Optional[int] = None
+    controller_seat_id: Optional[int] = None
+    seat_id: Optional[int] = None
+    raw: Dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
 class GameState:
     """Lightweight state machine to track MTGA session progress."""
 
@@ -51,6 +63,9 @@ class GameState:
     player_seat_id: int = 1
     active_player: Optional[int] = None
     priority_player: Optional[int] = None
+    decision_player: Optional[int] = None
+    starting_player: Optional[int] = None
+    die_rolls: list = field(default_factory=list)
     quests: Dict[str, QuestProgress] = field(default_factory=dict)
     turn: int = 0
     match_id: Optional[str] = None
@@ -59,6 +74,9 @@ class GameState:
     hand_info: Dict[str, object] = field(default_factory=dict)
     card_db: Optional["CardDatabase"] = None
     last_play_land_turn: int = -1
+    deck_cards: List[int] = field(default_factory=list)
+    available_actions: List[AvailableAction] = field(default_factory=list)
+    _had_play_action: bool = False
 
     def apply_event(self, event: LogEvent) -> None:
         """Update internal state based on a parsed log event."""
@@ -84,9 +102,35 @@ class GameState:
                 self.last_play_land_turn = -1
                 self.active_player = None
                 self.priority_player = None
+                self.decision_player = None
+                self.starting_player = None
+                self.die_rolls = []
+                self.available_actions = []
                 logger.debug("GameState: MATCH_START -> reset hand_kept (match_id=%s)", incoming_match_id)
             if incoming_match_id:
                 self.match_id = incoming_match_id
+            if "decision_player" in event.payload:
+                self.decision_player = int(event.payload["decision_player"])
+            if "starting_player" in event.payload:
+                self.starting_player = int(event.payload["starting_player"])
+            if "die_rolls" in event.payload:
+                self.die_rolls = list(event.payload.get("die_rolls") or [])
+            # Early turn/priority hints from GRE GameState.
+            if "turn" in event.payload:
+                try:
+                    self.turn = int(event.payload["turn"])
+                except Exception:
+                    pass
+            if "active_player" in event.payload:
+                try:
+                    self.active_player = int(event.payload["active_player"])
+                except Exception:
+                    pass
+            if "priority_player" in event.payload:
+                try:
+                    self.priority_player = int(event.payload["priority_player"])
+                except Exception:
+                    pass
         elif event.event_type == EventType.TURN_START:
             self.turn = int(event.payload.get("turn", 0))
             if self.phase in (MatchPhase.QUEUED, MatchPhase.IDLE):
@@ -102,6 +146,10 @@ class GameState:
             self.last_play_land_turn = -1
             self.active_player = None
             self.priority_player = None
+            self.decision_player = None
+            self.starting_player = None
+            self.die_rolls = []
+            self.available_actions = []
             logger.debug("GameState: MATCH_END -> reset hand_kept")
         elif event.event_type == EventType.HAND_UPDATE:
             grp_ids = event.payload.get("grp_ids")
@@ -111,10 +159,14 @@ class GameState:
                 # If we start the bot mid-match, a hand update implies we're in a game.
                 if self.phase == MatchPhase.IDLE:
                     self.phase = MatchPhase.IN_MATCH
+            if event.payload.get("mulligan_decision") == "MulliganOption_AcceptHand":
+                self.hand_kept = True
         elif event.event_type == EventType.PRIORITY_UPDATE:
             active = event.payload.get("active_player")
             prio = event.payload.get("priority_player")
             turn_hint = event.payload.get("turn")
+            if "starting_player" in event.payload:
+                self.starting_player = int(event.payload["starting_player"])
             changed = (active is not None and active != self.active_player) or (
                 prio is not None and prio != self.priority_player
             )
@@ -135,6 +187,18 @@ class GameState:
                     self.turn,
                     self.player_seat_id,
                 )
+        elif event.event_type == EventType.GRE_INFO:
+            if event.payload.get("kind") == "connect":
+                deck_cards = event.payload.get("deck_cards")
+                if isinstance(deck_cards, list):
+                    try:
+                        self.deck_cards = [int(card_id) for card_id in deck_cards]
+                    except Exception:
+                        self.deck_cards = []
+        elif event.event_type == EventType.ACTIONS_UPDATE:
+            actions = event.payload.get("actions")
+            if isinstance(actions, list):
+                self.update_actions(actions)
 
     def _apply_quest_update(self, event: LogEvent) -> None:
         quest_id = str(event.payload.get("quest_id"))
@@ -167,6 +231,26 @@ class GameState:
             return True
         return self.priority_player == self.player_seat_id
 
+    def has_soft_priority(self) -> bool:
+        """
+        Prefer certainty: if priority_player is known, require it.
+        If priority is unknown but active_player is known and not ours, treat as no priority.
+        Otherwise, assume yes.
+        """
+        if self.priority_player is not None:
+            return self.priority_player == self.player_seat_id
+        if self.active_player is not None and self.active_player != self.player_seat_id:
+            return False
+        return True
+
+    def has_turn_or_priority_info(self) -> bool:
+        """Return True if we have any GRE-based hint about turn/priority flow."""
+        return bool(
+            self.turn > 0
+            or self.active_player is not None
+            or self.priority_player is not None
+        )
+
     def _summarize_hand(self) -> None:
         """Enrich hand_info using the optional card database."""
         if not self.card_db or not hasattr(self.card_db, "summarize_hand"):
@@ -176,3 +260,63 @@ class GameState:
             self.hand_info = self.card_db.summarize_hand(self.hand_cards)
         except Exception:
             self.hand_info = {"total_cards": len(self.hand_cards)}
+
+    def update_actions(self, actions: List[Dict[str, object]]) -> None:
+        """Store a simplified list of GRE actions for downstream decision/targeting."""
+        parsed: List[AvailableAction] = []
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            action_type = action.get("actionType") or action.get("type")
+            if not action_type:
+                continue
+            seat_id = self._maybe_int(action.get("seatId"))
+            parsed.append(
+                AvailableAction(
+                    action_type=str(action_type),
+                    object_id=self._maybe_int(action.get("objectId")) or self._maybe_int(action.get("sourceId")),
+                    instance_id=self._maybe_int(action.get("instanceId")),
+                    controller_seat_id=self._maybe_int(action.get("controllerSeatId")),
+                    seat_id=seat_id,
+                    raw=action,
+                )
+            )
+        self.available_actions = parsed
+        has_play_action = any(
+            act.action_type.startswith("ActionType_Play") and self._is_my_action(act) for act in self.available_actions
+        )
+        if self._had_play_action and not has_play_action and self.phase == MatchPhase.IN_MATCH:
+            # If a play-land action disappeared, assume it was taken successfully.
+            if self.turn > 0:
+                self.last_play_land_turn = self.turn
+        self._had_play_action = has_play_action
+        if logger.isEnabledFor(logging.DEBUG) and parsed:
+            logger.debug(
+                "Available actions (%s): %s",
+                len(parsed),
+                [a.action_type for a in parsed],
+            )
+
+    def first_available_action(self, prefixes: List[str]) -> Optional[AvailableAction]:
+        """Return the first available action matching any of the given prefixes."""
+        for action in self.available_actions:
+            if any(action.action_type.startswith(prefix) for prefix in prefixes):
+                return action
+        return None
+
+    def has_available_action(self, prefixes: List[str]) -> bool:
+        return self.first_available_action(prefixes) is not None
+
+    @staticmethod
+    def _maybe_int(value: object) -> Optional[int]:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except Exception:
+            return None
+
+    def _is_my_action(self, action: AvailableAction) -> bool:
+        if action.controller_seat_id is not None:
+            return action.controller_seat_id == self.player_seat_id
+        if action.seat_id is not None:
+            return action.seat_id == self.player_seat_id
+        return True

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
+import re
 import shutil
 import subprocess
 import time
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -33,7 +34,11 @@ class UIController:
         hand_x_ratios: Optional[list[float]] = None,
         land_y_ratio: float = 0.84,
         land_x_ratios: Optional[list[float]] = None,
+        cast_target_y_ratio: float = 0.55,
+        land_target_y_ratio: float = 0.58,
+        prefer_double_click: bool = False,
         use_image_search: bool = True,
+        log_path: Optional[str] = None,
     ) -> None:
         self.image_dir = Path(image_dir) if image_dir else None
         self.dry_run = dry_run
@@ -45,6 +50,8 @@ class UIController:
         self._pyautogui = None
         self._ydotool = shutil.which("ydotool") if shutil.which("ydotool") else None
         self._use_ydotool = self._ydotool is not None
+        if os.environ.get("MTGA_BOT_USE_YDOTOOL", "1") == "0":
+            self._use_ydotool = False
         self._last_known_mouse_pos: Optional[tuple[int, int]] = None
         self._last_bot_move_time: float = 0.0
         self._user_pause_until: float = 0.0
@@ -55,11 +62,16 @@ class UIController:
         self.hand_x_ratios = self._normalize_ratio_list(hand_x_ratios, [0.52, 0.58, 0.64])
         self.land_y_ratio = float(land_y_ratio)
         self.land_x_ratios = self._normalize_ratio_list(land_x_ratios, [0.38, 0.44, 0.5])
+        self.cast_target_y_ratio = float(cast_target_y_ratio)
+        self.land_target_y_ratio = float(land_target_y_ratio)
+        self.prefer_double_click = bool(prefer_double_click)
         self._image_search_available = use_image_search
         self._prefer_scrot = bool(os.environ.get("MTGA_BOT_USE_SCROT", "1") != "0")
         self._tried_start_ydotoold = False
         self._ydotoold_started = False
         self._autoguessed_region: Optional[tuple[int, int, int, int]] = None
+        self.log_path = Path(log_path).expanduser() if log_path else None
+        self._object_id_pattern = re.compile(r'"?objectId"?[^0-9]*(\d+)', re.IGNORECASE)
         self._maybe_autoguess_click_region()
         if logger.isEnabledFor(logging.DEBUG):
             try:
@@ -88,10 +100,13 @@ class UIController:
         elif action.action_type == ActionType.ATTACK_ALL:
             self.press_key("a")  # MTGA default "attack with all"
         elif action.action_type == ActionType.PLAY_LAND:
-            self.play_land()
+            object_id = (action.details or {}).get("object_id") if action.details else None
+            self.play_land(object_id=object_id)
         elif action.action_type == ActionType.CAST_SPELL:
-            color = (action.details or {}).get("color")
-            self.cast_spell(color_hint=color)
+            details = action.details or {}
+            color = details.get("color")
+            object_id = details.get("object_id")
+            self.cast_spell(color_hint=color, object_id=object_id)
         elif action.action_type == ActionType.SURRENDER:
             self.surrender()
         elif action.action_type == ActionType.END_STEP:
@@ -230,71 +245,60 @@ class UIController:
         self._pyautogui.press(key)
         self.sleep_briefly()
 
-    def cast_spell(self, color_hint: Optional[str] = None) -> None:
+    def cast_spell(self, color_hint: Optional[str] = None, object_id: Optional[int] = None) -> None:
         if self.dry_run:
-            logger.info("[dry-run] Would cast spell (color: %s)", color_hint or "any")
+            logger.info("[dry-run] Would cast spell (color: %s, object_id: %s)", color_hint or "any", object_id)
             self.sleep_briefly()
             return
 
         self._maybe_pause_for_user_mouse()
-        # Drag from hand into battlefield area to ensure spells leave the hand.
+        if object_id is not None and self._cast_via_hover_object_id(
+            object_id,
+            y_ratio=self.hand_y_ratio,
+            rel_xs=self.hand_x_ratios,
+            label="cast_spell",
+        ):
+            return
+
         self._ensure_pyautogui()
         origin_x, origin_y, width, height = self._resolve_click_region()
         start_y = origin_y + height * self.hand_y_ratio + random.randint(-25, 25)
-        target_y = origin_y + height * 0.55 + random.randint(-30, 30)
         rel_x_choices = list(self.hand_x_ratios)
         if not rel_x_choices:
             rel_x_choices = [0.32, 0.4, 0.5, 0.6, 0.68]
         random.shuffle(rel_x_choices)
-        for rel_x in rel_x_choices[:5]:
-            start_x = origin_x + width * rel_x + random.randint(-40, 40)
-            target_x = origin_x + width * 0.5 + random.randint(-60, 60)
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "cast_spell drag from (%.1f, %.1f) -> (%.1f, %.1f) rel_x=%.3f region=%s",
-                    start_x,
-                    start_y,
-                    target_x,
-                    target_y,
-                    rel_x,
-                    (origin_x, origin_y, width, height),
-                )
-            self._drag_absolute(start_x, start_y, target_x, target_y, label="cast_spell")
-            time.sleep(0.15)
+        for rel_x in rel_x_choices:
+            x = origin_x + width * rel_x + random.randint(-25, 25)
+            self._double_click_absolute(x, start_y, label="cast_spell_double")
+            time.sleep(0.1)
         self.sleep_briefly()
 
-    def play_land(self) -> None:
+    def play_land(self, object_id: Optional[int] = None) -> None:
         if self.dry_run:
-            logger.info("[dry-run] Would play a land from hand")
+            logger.info("[dry-run] Would play a land from hand (object_id: %s)", object_id)
             self.sleep_briefly()
             return
 
         self._maybe_pause_for_user_mouse()
-        # Lands: drag from hand into the battlefield to ensure play triggers.
+        if object_id is not None and self._cast_via_hover_object_id(
+            object_id,
+            y_ratio=self.land_y_ratio,
+            rel_xs=self.land_x_ratios,
+            label="play_land",
+        ):
+            return
+
         self._ensure_pyautogui()
         origin_x, origin_y, width, height = self._resolve_click_region()
         start_y = origin_y + height * self.land_y_ratio + random.randint(-20, 20)
-        target_y = origin_y + height * 0.58 + random.randint(-25, 25)
         rel_x_choices = list(self.land_x_ratios)
         if not rel_x_choices:
             rel_x_choices = [0.32, 0.4, 0.5, 0.6, 0.68]
-        # Try up to 5 distinct positions across the hand to cover variable hand sizes.
         random.shuffle(rel_x_choices)
-        for rel_x in rel_x_choices[:5]:
-            start_x = origin_x + width * rel_x + random.randint(-30, 30)
-            target_x = origin_x + width * 0.45 + random.randint(-50, 50)
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "play_land drag from (%.1f, %.1f) -> (%.1f, %.1f) rel_x=%.3f region=%s",
-                    start_x,
-                    start_y,
-                    target_x,
-                    target_y,
-                    rel_x,
-                    (origin_x, origin_y, width, height),
-                )
-            self._drag_absolute(start_x, start_y, target_x, target_y, label="play_land")
-            time.sleep(0.12)
+        for rel_x in rel_x_choices:
+            x = origin_x + width * rel_x + random.randint(-20, 20)
+            self._double_click_absolute(x, start_y, label="play_land_double")
+            time.sleep(0.1)
         self.sleep_briefly()
 
     def surrender(self) -> None:
@@ -436,6 +440,91 @@ class UIController:
         except Exception as exc:
             logger.debug("Drag failed (%s): %s", label or "drag", exc)
 
+    def _cast_via_hover_object_id(
+        self,
+        target_object_id: int,
+        *,
+        y_ratio: float,
+        rel_xs: list[float],
+        label: str,
+        timeout_per_move: float = 0.8,
+    ) -> bool:
+        """
+        Move across hand slots until the hovered objectId in the log matches the target,
+        then double-click. Falls back to legacy casting if no match is found.
+        """
+        if not self.log_path or not self.log_path.exists():
+            return False
+
+        try:
+            self._ensure_pyautogui()
+        except Exception:
+            return False
+
+        origin_x, origin_y, width, height = self._resolve_click_region()
+        y = origin_y + height * y_ratio + random.randint(-15, 15)
+        rel_positions = rel_xs or [0.3, 0.38, 0.46, 0.54, 0.62, 0.7]
+        abs_positions = [origin_x + width * rel for rel in rel_positions]
+        # Include a coarse sweep if ratios are too narrow.
+        if len(abs_positions) < 5:
+            step = max(1, int(width / 7))
+            abs_positions.extend([origin_x + i * step for i in range(2, 6)])
+
+        try:
+            with self.log_path.open("r", encoding="utf-8", errors="ignore") as handle:
+                handle.seek(0, os.SEEK_END)
+                for abs_x in abs_positions:
+                    jittered_x = max(origin_x, min(origin_x + width - 1, abs_x + random.randint(-12, 12)))
+                    self._move_mouse_absolute(jittered_x, y)
+                    hovered_id = self._read_hovered_object_id(handle, timeout=timeout_per_move)
+                    if hovered_id == target_object_id:
+                        logger.debug(
+                            "Hover matched objectId %s at (%.1f, %.1f) for %s",
+                            target_object_id,
+                            jittered_x,
+                            y,
+                            label,
+                        )
+                        self._double_click_absolute(jittered_x, y, label=label)
+                        return True
+            return False
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.debug("Hover-based %s failed for objectId %s: %s", label, target_object_id, exc)
+            return False
+
+    def _read_hovered_object_id(self, handle, timeout: float = 0.3) -> Optional[int]:
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            line = handle.readline()
+            if not line:
+                time.sleep(0.05)
+                continue
+            match = self._object_id_pattern.search(line)
+            if match:
+                for group in match.groups():
+                    if group:
+                        try:
+                            return int(group)
+                        except Exception:
+                            continue
+        return None
+
+    def _move_mouse_absolute(self, x: float, y: float) -> None:
+        """Move the cursor without clicking, updating bot tracking to avoid pause triggers."""
+        self._maybe_pause_for_user_mouse()
+        self._ensure_pyautogui()
+        try:
+            self._pyautogui.moveTo(x, y, duration=0)
+            self._record_bot_mouse_position(x, y, label="move")
+        except Exception as exc:
+            logger.debug("Mouse move failed to (%.1f, %.1f): %s", x, y, exc)
+
+    def _double_click_absolute(self, x: float, y: float, label: Optional[str] = None) -> None:
+        """Perform a double-click at absolute coords."""
+        self._click_absolute(x, y, label=label)
+        time.sleep(0.08)
+        self._click_absolute(x, y, label=label)
+
     def _press_key_with_ydotool(self, key: str) -> bool:
         """
         Attempt to send a keypress via ydotool (Wayland-friendly).
@@ -530,6 +619,7 @@ class UIController:
             return self._autoguessed_region
         screen_size = self._pyautogui.size()
         return (0, 0, screen_size.width, screen_size.height)
+
 
     def _maybe_start_ydotoold(self) -> None:
         """

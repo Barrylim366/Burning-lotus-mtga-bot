@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 """
-Small helper to capture screen-relative coordinates for MTGA buttons/hand slots.
+Small helper to capture screen-relative coordinates for MTGA buttons/hand slots
+and (optionally) the MTGA window region.
 
 Usage:
     source .venv/bin/activate
@@ -9,7 +10,7 @@ Usage:
 
 It will prompt you to hover the mouse over targets and press Enter.
 Results are saved to calibration.json in the repo root and printed as a
-config snippet (click_targets, hand_x/y ratios).
+config snippet (click_targets, hand_x/y ratios, click_region if captured).
 """
 
 import json
@@ -52,6 +53,29 @@ def _capture_point(prompt: str, allow_skip: bool = False) -> Tuple[float, float]
     return (rel_x, rel_y)
 
 
+def _capture_region() -> Tuple[int, int, int, int] | None:
+    """
+    Capture a click_region by hovering the MTGA client: first top-left, then bottom-right.
+    """
+    print("\nOptional: capture MTGA window region for ultrawide/windowed setups.")
+    print("Hover TOP-LEFT of the playable area (exclude black bars) and press Enter...")
+    input()
+    tl = pyautogui.position()
+    print(f"  Top-left captured at ({tl.x}, {tl.y})")
+    print("Hover BOTTOM-RIGHT of the same area and press Enter...")
+    input()
+    br = pyautogui.position()
+    print(f"  Bottom-right captured at ({br.x}, {br.y})")
+    width = br.x - tl.x
+    height = br.y - tl.y
+    if width <= 0 or height <= 0:
+        print("  Invalid region (width/height <= 0); skipping click_region.")
+        return None
+    region = (int(tl.x), int(tl.y), int(width), int(height))
+    print(f"  Region: x={region[0]} y={region[1]} w={region[2]} h={region[3]}")
+    return region
+
+
 def main() -> None:
     pyautogui.FAILSAFE = False
     # Prefer scrot if available and backend not set.
@@ -59,6 +83,8 @@ def main() -> None:
         os.environ["PYAUTOGUI_SCREENSHOT"] = "scrot"
     width, height = pyautogui.size()
     print(f"Screen detected: {width}x{height}")
+
+    click_region = _capture_region()
 
     targets: Dict[str, Tuple[float, float]] = {}
     for spec in BUTTONS:
@@ -84,6 +110,13 @@ def main() -> None:
         "land_y_ratio": hand_y,  # often similar height
         "land_x_ratios": hand_x,
     }
+    if click_region:
+        data["click_region"] = {
+            "x": click_region[0],
+            "y": click_region[1],
+            "width": click_region[2],
+            "height": click_region[3],
+        }
 
     CALIBRATION_FILE.write_text(json.dumps(data, indent=2))
     print(f"\nSaved calibration to {CALIBRATION_FILE}")
