@@ -51,6 +51,9 @@ class PlayGamesStrategy(BaseStrategy):
                 if state.hand_kept:
                     return Action(ActionType.WAIT, reason="Hand already kept; waiting for first turn")
                 return Action(ActionType.KEEP_HAND, reason="Accept starting hand by default")
+            gre_action = self._action_from_available(state)
+            if gre_action:
+                return gre_action
             hand_info = state.hand_info or {}
             lands_raw = hand_info.get("lands", 0)
             lands_in_hand = int(lands_raw) if isinstance(lands_raw, (int, float)) else 0
@@ -71,6 +74,46 @@ class PlayGamesStrategy(BaseStrategy):
 
         return None
 
+    def _action_from_available(self, state: GameState) -> Optional[Action]:
+        """
+        Prefer GRE-provided actions over heuristics so we only click legal options.
+        """
+        land_action = state.first_available_action(["ActionType_PlayLand"])
+        if land_action:
+            return Action(
+                ActionType.PLAY_LAND,
+                details={
+                    "object_id": land_action.object_id,
+                    "instance_id": land_action.instance_id,
+                    "action_type": land_action.action_type,
+                },
+                reason="GRE action: play land",
+            )
+
+        cast_action = state.first_available_action(["ActionType_Cast", "ActionType_Play"])
+        if cast_action:
+            return Action(
+                ActionType.CAST_SPELL,
+                details={
+                    "object_id": cast_action.object_id,
+                    "instance_id": cast_action.instance_id,
+                    "action_type": cast_action.action_type,
+                },
+                reason="GRE action: cast/play card",
+            )
+
+        attack_action = state.first_available_action(
+            ["ActionType_DeclareAttackers", "ActionType_Attack", "ActionType_SubmitAttackers"]
+        )
+        if attack_action:
+            return Action(ActionType.ATTACK_ALL, reason="GRE action: attackers available")
+
+        pass_action = state.first_available_action(["ActionType_Pass", "ActionType_PassPriority"])
+        if pass_action:
+            return Action(ActionType.END_STEP, reason="GRE action: pass priority")
+
+        return None
+
 
 class CastSpellsStrategy(BaseStrategy):
     quest_kind = "cast_spells"
@@ -86,6 +129,9 @@ class CastSpellsStrategy(BaseStrategy):
         if state.phase == MatchPhase.IN_MATCH:
             if state.turn == 0:
                 return Action(ActionType.WAIT, reason="Give client a moment to load the battlefield")
+            gre_action = self._action_from_available(state)
+            if gre_action:
+                return gre_action
             if quest and quest.progress >= quest.goal - 1:
                 return Action(ActionType.SURRENDER, reason="Quest nearly done; exit early to save time")
             lands_in_hand = int((state.hand_info or {}).get("lands", 0))
@@ -105,6 +151,34 @@ class CastSpellsStrategy(BaseStrategy):
             )
         return None
 
+    def _action_from_available(self, state: GameState) -> Optional[Action]:
+        cast_action = state.first_available_action(["ActionType_Cast", "ActionType_Play"])
+        if cast_action:
+            return Action(
+                ActionType.CAST_SPELL,
+                details={
+                    "color": self.preferred_color,
+                    "object_id": cast_action.object_id,
+                    "instance_id": cast_action.instance_id,
+                    "action_type": cast_action.action_type,
+                },
+                reason="GRE action: cast/play available",
+            )
+
+        land_action = state.first_available_action(["ActionType_PlayLand"])
+        if land_action:
+            return Action(
+                ActionType.PLAY_LAND,
+                details={
+                    "object_id": land_action.object_id,
+                    "instance_id": land_action.instance_id,
+                    "action_type": land_action.action_type,
+                },
+                reason="GRE action: play land",
+            )
+
+        return None
+
 
 class CombatStrategy(BaseStrategy):
     quest_kind = "combat"
@@ -113,6 +187,11 @@ class CombatStrategy(BaseStrategy):
         if state.phase == MatchPhase.IDLE:
             return Action(ActionType.QUEUE_FOR_MATCH, reason="Queue for combat quest")
         if state.phase == MatchPhase.IN_MATCH:
+            gre_action = state.first_available_action(
+                ["ActionType_DeclareAttackers", "ActionType_Attack", "ActionType_SubmitAttackers"]
+            )
+            if gre_action:
+                return Action(ActionType.ATTACK_ALL, reason="GRE action: attackers available")
             return Action(ActionType.ATTACK_ALL, reason="Aggressive attacks to finish combat quest")
         return Action(ActionType.WAIT, reason="No-op until match state changes")
 
