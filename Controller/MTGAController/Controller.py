@@ -71,6 +71,8 @@ class Controller(ControllerSecondary):
         self.updated_game_state = GameState()
         self.__inst_id_grp_id_dict = {}
         self.__match_end_callback = None
+        # MTGA system seat id for the local player (can be 1 or 2)
+        self.__system_seat_id = None
 
     def start_game_from_home_screen(self):
         bot_logger.log_click(self.home_play_button_coors[0], self.home_play_button_coors[1], "QUEUE_BUTTON")
@@ -278,6 +280,7 @@ class Controller(ControllerSecondary):
         """Reset controller state for a new game - complete fresh start"""
         bot_logger.log_info("Resetting controller state for new game")
         self.__has_mulled_keep = False
+        self.__system_seat_id = None
         self.updated_game_state = GameState()
         self.__inst_id_grp_id_dict = {}
         # Cancel any pending decision timers
@@ -323,7 +326,13 @@ class Controller(ControllerSecondary):
                 self.__inst_id_grp_id_dict[object_dict['instanceId']] = object_dict['grpId']
 
     def __update_game_state(self, raw_dict: [str, str or int]):
-        game_state = Controller.__get_game_state_from_raw_dict(raw_dict)
+        # Derive the local player's systemSeatId from incoming messages (if present)
+        system_seat_id = Controller.__get_system_seat_id_from_raw_dict(raw_dict)
+        if system_seat_id is not None and system_seat_id != self.__system_seat_id:
+            self.__system_seat_id = system_seat_id
+            bot_logger.log_info(f"Detected local systemSeatId={self.__system_seat_id}")
+
+        game_state = Controller.__get_game_state_from_raw_dict(raw_dict, fallback_seat_id=self.__system_seat_id or 1)
         self.updated_game_state.update(game_state)
         print(self.updated_game_state)
 
@@ -348,29 +357,70 @@ class Controller(ControllerSecondary):
 
         if is_complete:
             self.__update_inst_id__grp_id_dict(self.updated_game_state.get_game_objects())
-            if turn_info_dict['decisionPlayer'] == 1 and self.__has_mulled_keep:
+            my_seat = self.__system_seat_id or 1
+            if turn_info_dict['decisionPlayer'] == my_seat and self.__has_mulled_keep:
                 # Cancel any existing timer before starting a new one
                 if self.__decision_execution_thread is not None:
                     self.__decision_execution_thread.cancel()
-                self.__decision_execution_thread = threading.Timer(self.__decision_delay,
-                                                                  lambda:
-                                                                  self.__decision_callback(self.updated_game_state))
+
+                def _decision_if_still_my_priority():
+                    try:
+                        ti = self.updated_game_state.get_turn_info() or {}
+                        still_my_priority = (ti.get('decisionPlayer') == my_seat)
+                        if still_my_priority and self.__decision_callback and self.__has_mulled_keep:
+                            self.__decision_callback(self.updated_game_state)
+                        else:
+                            bot_logger.log_info(
+                                f"Skipping delayed decision (decisionPlayer={ti.get('decisionPlayer')}, my_seat={my_seat})"
+                            )
+                    except Exception as e:
+                        bot_logger.log_error(f"Error in delayed decision callback: {e}")
+
+                self.__decision_execution_thread = threading.Timer(self.__decision_delay, _decision_if_still_my_priority)
                 self.__decision_execution_thread.start()
 
         # Start mulligan timer if we haven't made a mulligan decision yet
         # This needs to trigger regardless of is_complete to handle game restarts
-        if not self.__has_mulled_keep and turn_info_dict and turn_info_dict.get('decisionPlayer') == 1:
+        my_seat = self.__system_seat_id or 1
+        if not self.__has_mulled_keep and turn_info_dict and turn_info_dict.get('decisionPlayer') == my_seat:
             if self.__mulligan_execution_thread is not None:
                 self.__mulligan_execution_thread.cancel()
-            self.__mulligan_execution_thread = threading.Timer(self.__intro_delay,
-                                                              lambda:
-                                                              self.__mulligan_decision_callback([]))
+
+            def _mulligan_if_still_mine():
+                try:
+                    ti = self.updated_game_state.get_turn_info() or {}
+                    if ti.get('decisionPlayer') == my_seat and self.__mulligan_decision_callback:
+                        self.__mulligan_decision_callback([])
+                    else:
+                        bot_logger.log_info(
+                            f"Skipping delayed mulligan (decisionPlayer={ti.get('decisionPlayer')}, my_seat={my_seat})"
+                        )
+                        # Allow rescheduling if needed
+                        self.__has_mulled_keep = False
+                except Exception as e:
+                    bot_logger.log_error(f"Error in delayed mulligan callback: {e}")
+                    self.__has_mulled_keep = False
+
+            self.__mulligan_execution_thread = threading.Timer(self.__intro_delay, _mulligan_if_still_mine)
             self.__mulligan_execution_thread.start()
             self.__has_mulled_keep = True
             print('making mull decision')
 
     @staticmethod
-    def __get_game_state_from_raw_dict(raw_dict: [str, str or int]):
+    def __get_system_seat_id_from_raw_dict(raw_dict: [str, str or int]):
+        try:
+            temp_dict = raw_dict.get('greToClientEvent', {})
+            messages = temp_dict.get('greToClientMessages', [])
+            for message in messages:
+                seat_ids = message.get('systemSeatIds')
+                if isinstance(seat_ids, list) and len(seat_ids) > 0 and isinstance(seat_ids[0], int):
+                    return seat_ids[0]
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def __get_game_state_from_raw_dict(raw_dict: [str, str or int], fallback_seat_id: int = 1):
         temp_dict = raw_dict['greToClientEvent']
         temp_arr = temp_dict['greToClientMessages']
         return_game_state = GameState({})
@@ -389,7 +439,9 @@ class Controller(ControllerSecondary):
                 active_actions = req.get('actions', [])
                 bot_logger.log_actions_available(active_actions)
                 # Wrap each action in the expected format with seatId
-                wrapped_actions = [{'seatId': 1, 'action': action} for action in active_actions]
+                seat_ids = message.get('systemSeatIds') or []
+                seat_id = seat_ids[0] if isinstance(seat_ids, list) and len(seat_ids) > 0 else fallback_seat_id
+                wrapped_actions = [{'seatId': seat_id, 'action': action} for action in active_actions]
                 if wrapped_actions:
                     actions_state = GameState({'actions': wrapped_actions})
                     return_game_state.update(actions_state)

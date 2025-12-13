@@ -164,8 +164,18 @@ class DummyAI(AIKernel):
 
             self._debug(f"State: active={active_player}, decision={decision_player}, priority={priority_player}, phase={phase}, step={step}")
 
-            # Only act if it's our turn to decide
-            if active_player == 1 and decision_player == 1 and priority_player == 1:
+            # Determine which seat we're acting for.
+            # The controller is expected to only call the AI when it's our priority/decision.
+            my_seat = decision_player or 1
+
+            # If we somehow got called without priority, just pass/resolve.
+            if priority_player and priority_player != my_seat:
+                self._debug(f"Not our priority (priority={priority_player}, my_seat={my_seat})")
+                self._debug(f"Returning default move: {move}")
+                return move
+
+            # Only do proactive actions (play land / cast / attack) on our active turn.
+            if active_player == my_seat and decision_player == my_seat:
 
                 # Combat phase - attack
                 if phase == 'Phase_Combat' and step == 'Step_DeclareAttack':
