@@ -1,5 +1,5 @@
 {
-    "log_path": "C:/Users/giaco/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
+    "log_path": "/home/barrylim/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
     "screen_bounds": [
         [
             0,
@@ -10,26 +10,27 @@
             1440
         ]
     ],
+    "input_backend": "auto",
     "click_targets": {
         "keep_hand": {
             "x": 1876,
             "y": 1060
         },
         "queue_button": {
-            "x": 2485,
-            "y": 1194
+            "x": 2488,
+            "y": 1192
         },
         "next": {
-            "x": 2546,
-            "y": 1137
+            "x": 2512,
+            "y": 1191
         },
         "concede": {
-            "x": 1714,
-            "y": 814
+            "x": 1711,
+            "y": 821
         },
         "attack_all": {
-            "x": 2529,
-            "y": 1131
+            "x": 2520,
+            "y": 1133
         },
         "opponent_avatar": {
             "x": 1720,

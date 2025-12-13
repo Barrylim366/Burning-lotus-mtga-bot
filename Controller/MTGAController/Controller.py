@@ -2,19 +2,16 @@ import json
 import threading
 import time
 
-from pynput.mouse import Button
-
 from Controller.ControllerInterface import ControllerSecondary
 from Controller.MTGAController.LogReader import LogReader
-from pynput import mouse
-from pynput import keyboard
 from Controller.Utilities.GameState import GameState
+from Controller.Utilities.input_controller import InputControllerError, create_input_controller
 import bot_logger
 
 
 class Controller(ControllerSecondary):
 
-    def __init__(self, log_path, screen_bounds=((0, 0), (1600, 900)), click_targets=None):
+    def __init__(self, log_path, screen_bounds=((0, 0), (1600, 900)), click_targets=None, input_backend: str | None = None):
         self.__decision_callback = None
         self.__mulligan_decision_callback = None
         self.__action_success_callback = None
@@ -33,8 +30,14 @@ class Controller(ControllerSecondary):
             'assign_damage': '"type": "GREMessageType_AssignDamageReq"'
         }
         self.log_reader = LogReader(self.patterns.values(), log_path=log_path, callback=self.__log_callback)
-        self.keyboard_controller = keyboard.Controller()
-        self.mouse_controller = mouse.Controller()
+        try:
+            self.input = create_input_controller(input_backend)
+        except InputControllerError as e:
+            raise RuntimeError(f"Failed to initialize input backend {input_backend!r}: {e}") from e
+        try:
+            self.input.configure_screen_bounds(self.screen_bounds)
+        except Exception as e:
+            raise RuntimeError(f"Failed to configure input backend with screen bounds: {e}") from e
         self.cast_speed = 0.01
         # Height of the mouse when cards are scanned for casting
         self.cast_height = 30
@@ -76,14 +79,14 @@ class Controller(ControllerSecondary):
 
     def start_game_from_home_screen(self):
         bot_logger.log_click(self.home_play_button_coors[0], self.home_play_button_coors[1], "QUEUE_BUTTON")
-        self.mouse_controller.position = self.home_play_button_coors
-        self.mouse_controller.press(Button.left)
+        self.input.move_abs(self.home_play_button_coors[0], self.home_play_button_coors[1])
+        self.input.left_down()
         time.sleep(0.2)
-        self.mouse_controller.release(Button.left)
+        self.input.left_up()
         time.sleep(1)
-        self.mouse_controller.press(Button.left)
+        self.input.left_down()
         time.sleep(0.2)
-        self.mouse_controller.release(Button.left)
+        self.input.left_up()
 
     def start_monitor(self) -> None:
         self.log_reader.start_log_monitor()
@@ -114,12 +117,12 @@ class Controller(ControllerSecondary):
         # Move above start point first to reset any hover states
         reset_pos = (self.hand_scan_p1[0], self.hand_scan_p1[1] - 100)
         bot_logger.log_move(reset_pos[0], reset_pos[1], f"RESET_BEFORE_SCAN (target card_id={card_id})")
-        self.mouse_controller.position = reset_pos
+        self.input.move_abs(reset_pos[0], reset_pos[1])
         time.sleep(0.5)
 
         # Move to start of hand scan
         bot_logger.log_move(self.hand_scan_p1[0], self.hand_scan_p1[1], "START_HAND_SCAN")
-        self.mouse_controller.position = self.hand_scan_p1
+        self.input.move_abs(self.hand_scan_p1[0], self.hand_scan_p1[1])
 
         current_hovered_id = None
         start_x = self.hand_scan_p1[0]
@@ -130,7 +133,7 @@ class Controller(ControllerSecondary):
 
         while current_hovered_id != card_id:
             # Check if we have exceeded the scan area
-            current_x = self.mouse_controller.position[0]
+            current_x = self.input.position().x
             if (direction == 1 and current_x >= end_x) or (direction == -1 and current_x <= end_x):
                 bot_logger.log_error(f"SCAN_FAILED: Card {card_id} not found. Scanned from x={start_x} to x={end_x}, ended at x={current_x}")
                 print(f"Scanned entire hand area but did not find card_id: {card_id}")
@@ -142,11 +145,11 @@ class Controller(ControllerSecondary):
 
             # Inner loop: move until log updates or bounds hit
             while not self.log_reader.has_new_line(self.patterns['hover_id']):
-                self.mouse_controller.move(self.cast_card_dist * direction, 0)
+                self.input.move_rel(self.cast_card_dist * direction, 0)
                 time.sleep(self.cast_speed)
 
                 # Check bounds inside inner loop too
-                current_x = self.mouse_controller.position[0]
+                current_x = self.input.position().x
                 if (direction == 1 and current_x >= end_x) or (direction == -1 and current_x <= end_x):
                     break
 
@@ -160,25 +163,25 @@ class Controller(ControllerSecondary):
                  break
 
         if current_hovered_id == card_id:
-            click_pos = self.mouse_controller.position
-            bot_logger.log_click(click_pos[0], click_pos[1], f"CAST_CARD (id={card_id})")
+            click_pos = self.input.position()
+            bot_logger.log_click(click_pos.x, click_pos.y, f"CAST_CARD (id={card_id})")
             time.sleep(0.5)
-            self.mouse_controller.click(Button.left, 1)
+            self.input.left_click(1)
             time.sleep(0.1)
-            self.mouse_controller.click(Button.left, 1)
+            self.input.left_click(1)
             time.sleep(0.7)
 
         # Reset position
         reset_pos = (self.hand_scan_p1[0], self.hand_scan_p1[1] - 100)
         bot_logger.log_move(reset_pos[0], reset_pos[1], "RESET_AFTER_CAST")
-        self.mouse_controller.position = reset_pos
+        self.input.move_abs(reset_pos[0], reset_pos[1])
 
     def all_attack(self) -> None:
         bot_logger.log_click(self.main_br_button_coordinates[0], self.main_br_button_coordinates[1], "ATTACK_ALL")
-        self.mouse_controller.position = self.main_br_button_coordinates
-        self.mouse_controller.click(Button.left, 1)
+        self.input.move_abs(self.main_br_button_coordinates[0], self.main_br_button_coordinates[1])
+        self.input.left_click(1)
         time.sleep(1)
-        self.mouse_controller.click(Button.left, 1)
+        self.input.left_click(1)
 
     def resolve(self) -> None:
         if self.updated_game_state.get_turn_info()['step'] != 'Step_DeclareAttack' \
@@ -190,20 +193,16 @@ class Controller(ControllerSecondary):
                 self.main_br_button_coordinates[1] - 50,
             )
         bot_logger.log_click(pos[0], pos[1], "RESOLVE")
-        self.mouse_controller.position = pos
-        self.mouse_controller.click(Button.left, 1)
+        self.input.move_abs(pos[0], pos[1])
+        self.input.left_click(1)
 
     def auto_pass(self) -> None:
-        self.keyboard_controller.press(keyboard.Key.enter)
+        self.input.tap_enter()
         time.sleep(0.4)
-        self.keyboard_controller.release(keyboard.Key.enter)
 
     def unconditional_auto_pass(self) -> None:
-        self.keyboard_controller.press(keyboard.Key.shift)
-        self.keyboard_controller.press(keyboard.Key.enter)
+        self.input.tap_shift_enter()
         time.sleep(0.4)
-        self.keyboard_controller.release(keyboard.Key.shift)
-        self.keyboard_controller.release(keyboard.Key.enter)
 
     def get_game_state(self) -> 'GameStateSecondary':
         return self.updated_game_state
@@ -211,18 +210,18 @@ class Controller(ControllerSecondary):
     def keep(self, keep: bool):
         if keep:
             bot_logger.log_click(self.mulligan_keep_coors[0], self.mulligan_keep_coors[1], "KEEP_HAND")
-            self.mouse_controller.position = self.mulligan_keep_coors
+            self.input.move_abs(self.mulligan_keep_coors[0], self.mulligan_keep_coors[1])
         else:
             bot_logger.log_click(self.mulligan_mull_coors[0], self.mulligan_mull_coors[1], "MULLIGAN")
-            self.mouse_controller.position = self.mulligan_mull_coors
-        self.mouse_controller.click(Button.left)
+            self.input.move_abs(self.mulligan_mull_coors[0], self.mulligan_mull_coors[1])
+        self.input.left_click(1)
 
     def click_assign_damage_done(self):
         """Click the Done button during damage assignment"""
         bot_logger.log_click(self.assign_damage_done_coors[0], self.assign_damage_done_coors[1], "ASSIGN_DAMAGE_DONE")
-        self.mouse_controller.position = self.assign_damage_done_coors
+        self.input.move_abs(self.assign_damage_done_coors[0], self.assign_damage_done_coors[1])
         time.sleep(0.5)
-        self.mouse_controller.click(Button.left)
+        self.input.left_click(1)
         time.sleep(0.2)
         # Maybe click twice to be sure? The user said "click", usually one is enough but delays help.
         # Just one click for now as per other methods.
@@ -264,12 +263,12 @@ class Controller(ControllerSecondary):
         center_x = (self.screen_bounds[0][0] + self.screen_bounds[1][0]) // 2
         center_y = (self.screen_bounds[0][1] + self.screen_bounds[1][1]) // 2
         bot_logger.log_click(center_x, center_y, "DISMISS_END_SCREEN")
-        self.mouse_controller.position = (center_x, center_y)
+        self.input.move_abs(center_x, center_y)
         time.sleep(0.5)
-        self.mouse_controller.click(Button.left)
+        self.input.left_click(1)
         time.sleep(1)
         # Click again in case first click wasn't enough
-        self.mouse_controller.click(Button.left)
+        self.input.left_click(1)
         bot_logger.log_info("Match completed - dismissed end screen")
 
         # Call match end callback to trigger restart
