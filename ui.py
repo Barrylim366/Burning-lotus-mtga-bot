@@ -491,8 +491,9 @@ class MTGBotUI(tk.Tk):
         super().__init__()
 
         self.title("MTGA Bot")
-        self.geometry("400x600")
-        self.resizable(False, False)
+        # Slightly taller window so all controls fit on typical font/DPI setups
+        self.geometry("400x680")
+        self.resizable(False, True)
         self.configure(bg="#1e1e1e")
 
         self.config_manager = ConfigManager()
@@ -520,20 +521,24 @@ class MTGBotUI(tk.Tk):
             logo_image = Image.open(logo_path)
             logo_image = logo_image.resize((120, 120), Image.Resampling.LANCZOS)
 
-            # Convert to RGBA and replace white/light background with UI background color
+            # Convert to RGBA and mask everything outside the circle to the UI background.
+            # This removes the checkerboard/square border in the source image while keeping the round gray badge.
             logo_image = logo_image.convert("RGBA")
-            pixels = logo_image.load()
             bg_color = (30, 30, 30, 255)  # #1e1e1e in RGBA
-
-            for y in range(logo_image.height):
-                for x in range(logo_image.width):
-                    r, g, b, a = pixels[x, y]
-                    # Replace light gray/white pixels (the background circle area)
-                    if r > 180 and g > 180 and b > 180:
-                        pixels[x, y] = bg_color
-                    # Also handle the checkered/transparent areas
-                    elif r > 150 and g > 150 and b > 150:
-                        pixels[x, y] = bg_color
+            bg_image = Image.new("RGBA", logo_image.size, bg_color)
+            # Build an anti-aliased circular mask by drawing at higher res and downsampling.
+            from PIL import ImageDraw
+            aa = 4
+            pad = 6
+            mask_big = Image.new("L", (logo_image.width * aa, logo_image.height * aa), 0)
+            draw = ImageDraw.Draw(mask_big)
+            pad_big = pad * aa
+            draw.ellipse(
+                (pad_big, pad_big, logo_image.width * aa - pad_big - 1, logo_image.height * aa - pad_big - 1),
+                fill=255,
+            )
+            mask = mask_big.resize(logo_image.size, Image.Resampling.LANCZOS)
+            logo_image = Image.composite(logo_image, bg_image, mask)
 
             self.logo_photo = ImageTk.PhotoImage(logo_image)
             logo_label = tk.Label(logo_frame, image=self.logo_photo, bg="#1e1e1e")
