@@ -221,6 +221,17 @@ class DummyAI(AIKernel):
                 return True
         return False
 
+    def _needs_spell_target_selection(self, action_list):
+        """Detect non-combat target selection prompts (spells/abilities)."""
+        for action_wrapper in action_list:
+            action = action_wrapper.get('action', {})
+            action_type = action.get('actionType', '')
+            if not action_type:
+                continue
+            if "Target" in action_type and "Attack" not in action_type and "Combat" not in action_type:
+                return True
+        return False
+
     def generate_keep(self, card_list) -> bool:
         self._debug("generate_keep called - keeping hand")
         return True
@@ -287,6 +298,10 @@ class DummyAI(AIKernel):
 
             # Only do proactive actions (play land / cast / attack) on our active turn.
             if active_player == my_seat and decision_player == my_seat:
+                # If a spell/ability target is required, always target opponent avatar.
+                if self._needs_spell_target_selection(action_list):
+                    self._debug("Spell target selection required - targeting opponent player")
+                    return {'select_target': [-1]}
 
                 # Combat phase - attack
                 if phase == 'Phase_Combat' and step == 'Step_DeclareAttack':
@@ -350,6 +365,74 @@ class DummyAI(AIKernel):
                         self._debug(f"CASTING: {card_name} (instanceId={instance_id}, cost={mana_cost})")
                         move = {'cast': [instance_id]}
                         return move
+
+                    # Third: cast non-creature spells (Instant/Sorcery) face
+                    spell_actions = []
+                    allow_sorcery = phase in ['Phase_Main1', 'Phase_Main2']
+                    for action_wrapper in action_list:
+                        action = action_wrapper.get('action', {})
+                        if action.get('actionType') != 'ActionType_Cast':
+                            continue
+                        instance_id = action.get('instanceId')
+                        action_mana_cost = action.get('manaCost', [])
+                        grp_id = action.get('grpId') or inst_id_grp_id_dict.get(instance_id)
+                        card_info = CardInfo.get_card_info(grp_id)
+                        if not card_info:
+                            continue
+                        card_types = card_info.get('types', [])
+                        if 'Creature' in card_types:
+                            continue
+                        is_instant = 'Instant' in card_types
+                        is_sorcery = 'Sorcery' in card_types
+                        if not is_instant and not is_sorcery:
+                            continue
+                        if is_sorcery and not allow_sorcery:
+                            continue
+
+                        card_name = card_info.get('name', f'Card#{instance_id}')
+                        mana_cost_str = card_info.get('manaCost', '')
+                        cmc = CardInfo.calculate_cmc(mana_cost_str)
+                        if self._can_cast_with_mana_cost(action_mana_cost, available_colors, total_mana, sources):
+                            spell_actions.append((cmc, instance_id, card_name, mana_cost_str))
+                            self._debug(f"Can cast spell: {card_name} (cost={mana_cost_str}, cmc={cmc})")
+
+                    if spell_actions:
+                        spell_actions.sort(key=lambda x: x[0])
+                        cmc, instance_id, card_name, mana_cost = spell_actions[0]
+                        self._debug(f"CASTING SPELL: {card_name} (instanceId={instance_id}, cost={mana_cost})")
+                        move = {'cast': [instance_id]}
+                        return move
+
+                    # Last: cast enchantments in main phase
+                    if phase in ['Phase_Main1', 'Phase_Main2']:
+                        enchant_actions = []
+                        for action_wrapper in action_list:
+                            action = action_wrapper.get('action', {})
+                            if action.get('actionType') != 'ActionType_Cast':
+                                continue
+                            instance_id = action.get('instanceId')
+                            action_mana_cost = action.get('manaCost', [])
+                            grp_id = action.get('grpId') or inst_id_grp_id_dict.get(instance_id)
+                            card_info = CardInfo.get_card_info(grp_id)
+                            if not card_info:
+                                continue
+                            card_types = card_info.get('types', [])
+                            if 'Enchantment' not in card_types:
+                                continue
+
+                            card_name = card_info.get('name', f'Card#{instance_id}')
+                            mana_cost_str = card_info.get('manaCost', '')
+                            cmc = CardInfo.calculate_cmc(mana_cost_str)
+                            if self._can_cast_with_mana_cost(action_mana_cost, available_colors, total_mana, sources):
+                                enchant_actions.append((cmc, instance_id, card_name, mana_cost_str))
+                                self._debug(f"Can cast enchantment: {card_name} (cost={mana_cost_str}, cmc={cmc})")
+
+                        if enchant_actions:
+                            enchant_actions.sort(key=lambda x: x[0])
+                            cmc, instance_id, card_name, mana_cost = enchant_actions[0]
+                            self._debug(f"CASTING ENCHANTMENT: {card_name} (instanceId={instance_id}, cost={mana_cost})")
+                            move = {'cast': [instance_id]}
+                            return move
 
             self._debug(f"Returning default move: {move}")
             return move

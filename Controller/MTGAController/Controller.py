@@ -32,6 +32,7 @@ class Controller(ControllerSecondary):
             'assign_damage': '"type": "GREMessageType_AssignDamageReq"',
             'declare_attackers': '"type": "GREMessageType_DeclareAttackersReq"',
             'select_n': '"type": "GREMessageType_SelectNReq"',
+            'select_targets': '"type": "GREMessageType_SelectTargetsReq"',
         }
         self.log_reader = LogReader(self.patterns.values(), log_path=log_path, callback=self.__log_callback)
         try:
@@ -88,6 +89,10 @@ class Controller(ControllerSecondary):
         self.__attack_target_required = False
         # MTGA system seat id for the local player (can be 1 or 2)
         self.__system_seat_id = None
+        self.__last_target_select_source_id = None
+        self.__last_target_select_ts = 0.0
+        self.__pending_target_select = None
+        self.__last_submit_targets_ts = 0.0
 
     def start_game_from_home_screen(self):
         bot_logger.log_click(self.home_play_button_coors[0], self.home_play_button_coors[1], "QUEUE_BUTTON")
@@ -525,6 +530,8 @@ class Controller(ControllerSecondary):
             self.__handle_declare_attackers_req(line_containing_pattern)
         elif pattern == self.patterns["select_n"]:
             self.__handle_select_n_req(line_containing_pattern)
+        elif pattern == self.patterns["select_targets"]:
+            self.__handle_select_targets_req(line_containing_pattern)
 
     def __handle_select_n_req(self, line: str) -> None:
         try:
@@ -536,8 +543,10 @@ class Controller(ControllerSecondary):
             for message in messages:
                 if message.get("type") != "GREMessageType_SelectNReq":
                     continue
+                if self.__system_seat_id is None:
+                    return
                 seat_ids = message.get("systemSeatIds") or []
-                if self.__system_seat_id is not None and self.__system_seat_id not in seat_ids:
+                if self.__system_seat_id not in seat_ids:
                     continue
                 req = message.get("selectNReq", {})
                 ids = list(req.get("ids", []) or [])
@@ -589,6 +598,120 @@ class Controller(ControllerSecondary):
                 _attempt_selection(1, delay=0.6)
         except Exception as e:
             bot_logger.log_error(f"Failed to handle SelectNReq: {e}")
+
+    def __handle_select_targets_req(self, line: str) -> None:
+        try:
+            start = line.find("{")
+            if start == -1:
+                return
+            payload = json.loads(line[start:])
+            messages = payload.get("greToClientEvent", {}).get("greToClientMessages", [])
+            for message in messages:
+                if message.get("type") != "GREMessageType_SelectTargetsReq":
+                    continue
+                if self.__system_seat_id is None:
+                    return
+                seat_ids = message.get("systemSeatIds") or []
+                if self.__system_seat_id not in seat_ids:
+                    continue
+                source_id = message.get("selectTargetsReq", {}).get("sourceId")
+                self.__schedule_target_selection(source_id, reason="SelectTargetsReq")
+        except Exception as e:
+            bot_logger.log_error(f"Failed to handle SelectTargetsReq: {e}")
+
+    def __schedule_target_selection(self, source_id: int | None, reason: str) -> None:
+        now = time.time()
+        if source_id is None:
+            source_id = -1
+        if self.__last_target_select_source_id == source_id and now - self.__last_target_select_ts < 1.0:
+            return
+        self.__last_target_select_source_id = source_id
+        self.__last_target_select_ts = now
+        self.__pending_target_select = {"source_id": source_id, "ts": now}
+        bot_logger.log_info(f"{reason}: targeting opponent avatar")
+
+        def _retry_if_needed():
+            if self.__pending_target_select and self.__is_selecting_targets():
+                age = time.time() - self.__last_target_select_ts
+                if age < 3.0 and (time.time() - self.__last_submit_targets_ts) > 0.5:
+                    bot_logger.log_info("Target still pending, retrying opponent avatar")
+                    self.select_target(-1)
+
+        def _do_click():
+            self.select_target(-1)
+            threading.Timer(0.8, _retry_if_needed).start()
+
+        threading.Timer(0.5, _do_click).start()
+
+    def __is_selecting_targets(self) -> bool:
+        try:
+            annotations = self.updated_game_state.get_annotations()
+            for annotation in annotations:
+                types = annotation.get("type", []) or []
+                if "AnnotationType_PlayerSelectingTargets" not in types:
+                    continue
+                affector_id = annotation.get("affectorId")
+                if self.__system_seat_id is None or affector_id is None:
+                    return True
+                if affector_id == self.__system_seat_id:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def __handle_target_selection_from_raw_dict(self, raw_dict: dict) -> None:
+        try:
+            messages = raw_dict.get("greToClientEvent", {}).get("greToClientMessages", [])
+            if self.__system_seat_id is None:
+                return
+            for message in messages:
+                if message.get("type") != "GREMessageType_SelectTargetsReq":
+                    continue
+                seat_ids = message.get("systemSeatIds") or []
+                if self.__system_seat_id not in seat_ids:
+                    continue
+                req = message.get("selectTargetsReq", {}) or {}
+                targets = req.get("targets", []) or []
+                if targets:
+                    t0 = targets[0]
+                    min_t = t0.get("minTargets")
+                    max_t = t0.get("maxTargets")
+                    selected = t0.get("selectedTargets")
+                    bot_logger.log_info(
+                        f"SelectTargetsReq details: sourceId={req.get('sourceId')}, min={min_t}, max={max_t}, selected={selected}, targetCount={len(t0.get('targets', []) or [])}"
+                    )
+                source_id = message.get("selectTargetsReq", {}).get("sourceId")
+                self.__schedule_target_selection(source_id, reason="SelectTargetsReq (from game state)")
+                return
+            for message in messages:
+                if message.get("type") != "GREMessageType_GameStateMessage":
+                    continue
+                annotations = message.get("gameStateMessage", {}).get("annotations", []) or []
+                for annotation in annotations:
+                    types = annotation.get("type", []) or []
+                    if "AnnotationType_PlayerSelectingTargets" not in types:
+                        continue
+                    affector_id = annotation.get("affectorId")
+                    if affector_id is not None and affector_id != self.__system_seat_id:
+                        continue
+                    affected_ids = annotation.get("affectedIds") or []
+                    source_id = affected_ids[0] if affected_ids else None
+                    self.__schedule_target_selection(source_id, reason="PlayerSelectingTargets")
+                    return
+            for message in messages:
+                if message.get("type") != "GREMessageType_SubmitTargetsResp":
+                    continue
+                seat_ids = message.get("systemSeatIds") or []
+                if self.__system_seat_id not in seat_ids:
+                    continue
+                resp = message.get("submitTargetsResp", {}) or {}
+                result = resp.get("result")
+                if result == "ResultCode_Success":
+                    self.__last_submit_targets_ts = time.time()
+                    self.__pending_target_select = None
+                    bot_logger.log_info("SubmitTargetsResp: success")
+        except Exception as e:
+            bot_logger.log_error(f"Failed to handle target selection from game state: {e}")
 
     def __handle_declare_attackers_req(self, line: str) -> None:
         try:
@@ -705,9 +828,14 @@ class Controller(ControllerSecondary):
     def __update_game_state(self, raw_dict: [str, str or int]):
         # Derive the local player's systemSeatId from incoming messages (if present)
         system_seat_id = Controller.__get_system_seat_id_from_raw_dict(raw_dict)
-        if system_seat_id is not None and system_seat_id != self.__system_seat_id:
-            self.__system_seat_id = system_seat_id
-            bot_logger.log_info(f"Detected local systemSeatId={self.__system_seat_id}")
+        if system_seat_id is not None:
+            if self.__system_seat_id is None:
+                self.__system_seat_id = system_seat_id
+                bot_logger.log_info(f"Detected local systemSeatId={self.__system_seat_id}")
+            elif system_seat_id != self.__system_seat_id:
+                bot_logger.log_info(
+                    f"Ignoring systemSeatId flip (current={self.__system_seat_id}, seen={system_seat_id})"
+                )
 
         outcome = self.__infer_match_won_from_raw_dict(raw_dict)
         if outcome is not None:
@@ -719,6 +847,8 @@ class Controller(ControllerSecondary):
 
         # Log all parsed game state data to bot.log
         bot_logger.log_game_state_update(self.updated_game_state.get_full_state())
+
+        self.__handle_target_selection_from_raw_dict(raw_dict)
 
         # Check for successful actions in the log update
         if self.__action_success_callback:
@@ -738,8 +868,10 @@ class Controller(ControllerSecondary):
 
         if is_complete:
             self.__update_inst_id__grp_id_dict(self.updated_game_state.get_game_objects())
-            my_seat = self.__system_seat_id or 1
-            if turn_info_dict['decisionPlayer'] == my_seat and self.__has_mulled_keep:
+            my_seat = self.__system_seat_id
+            if my_seat is None:
+                bot_logger.log_info("Skipping decision (local systemSeatId unknown)")
+            elif turn_info_dict['decisionPlayer'] == my_seat and self.__has_mulled_keep:
                 # Cancel any existing timer before starting a new one
                 if self.__decision_execution_thread is not None:
                     self.__decision_execution_thread.cancel()
@@ -762,8 +894,8 @@ class Controller(ControllerSecondary):
 
         # Start mulligan timer if we haven't made a mulligan decision yet
         # This needs to trigger regardless of is_complete to handle game restarts
-        my_seat = self.__system_seat_id or 1
-        if not self.__has_mulled_keep and turn_info_dict and turn_info_dict.get('decisionPlayer') == my_seat:
+        my_seat = self.__system_seat_id
+        if my_seat is not None and not self.__has_mulled_keep and turn_info_dict and turn_info_dict.get('decisionPlayer') == my_seat:
             if self.__mulligan_execution_thread is not None:
                 self.__mulligan_execution_thread.cancel()
 
@@ -792,6 +924,20 @@ class Controller(ControllerSecondary):
         try:
             temp_dict = raw_dict.get('greToClientEvent', {})
             messages = temp_dict.get('greToClientMessages', [])
+            preferred_types = {
+                "GREMessageType_ActionsAvailableReq",
+                "GREMessageType_SelectNReq",
+                "GREMessageType_SelectTargetsReq",
+                "GREMessageType_DeclareAttackersReq",
+                "GREMessageType_AssignDamageReq",
+                "GREMessageType_MulliganReq",
+            }
+            for message in messages:
+                if message.get('type') not in preferred_types:
+                    continue
+                seat_ids = message.get('systemSeatIds')
+                if isinstance(seat_ids, list) and len(seat_ids) > 0 and isinstance(seat_ids[0], int):
+                    return seat_ids[0]
             for message in messages:
                 seat_ids = message.get('systemSeatIds')
                 if isinstance(seat_ids, list) and len(seat_ids) > 0 and isinstance(seat_ids[0], int):

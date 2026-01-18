@@ -27,7 +27,9 @@ def log_raw_line(pattern: str, line: str):
         with open(BOT_LOG_FILE, 'a') as f:
             f.write(f"[{_timestamp()}] [RAW] Pattern='{pattern}' matched\n")
             # Truncate very long lines for readability
-            if len(line) > 500:
+            if "SelectTargetsReq" in pattern:
+                f.write(f"[{_timestamp()}] [RAW] Line: {line.strip()}\n")
+            elif len(line) > 500:
                 f.write(f"[{_timestamp()}] [RAW] Line (truncated): {line[:500]}...\n")
             else:
                 f.write(f"[{_timestamp()}] [RAW] Line: {line.strip()}\n")
