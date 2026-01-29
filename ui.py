@@ -832,6 +832,7 @@ class SettingsWindow(tk.Toplevel):
         self._playback_stop_event = threading.Event()
         self._current_record_events = []
         self._records_path = os.path.join(os.path.dirname(__file__), "recorded_actions_records.json")
+        self._switch_save_job = None
 
         frame = tk.Frame(self, bg="#2b2b2b", padx=20, pady=20)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -908,6 +909,7 @@ class SettingsWindow(tk.Toplevel):
         switch_entry.pack(side=tk.LEFT, padx=(10, 6))
         switch_entry.bind("<Return>", lambda _e: self._save_switch_minutes())
         switch_entry.bind("<FocusOut>", lambda _e: self._save_switch_minutes())
+        switch_entry.bind("<KeyRelease>", self._debounced_save_switch_minutes)
 
         switch_hint = tk.Label(
             switch_inner,
@@ -1001,6 +1003,14 @@ class SettingsWindow(tk.Toplevel):
             minutes = 0
         self.switch_minutes_var.set(str(minutes))
         self._config_manager.set_account_switch_minutes(minutes)
+
+    def _debounced_save_switch_minutes(self, _event=None):
+        if self._switch_save_job:
+            try:
+                self.after_cancel(self._switch_save_job)
+            except Exception:
+                pass
+        self._switch_save_job = self.after(500, self._save_switch_minutes)
 
     def _record_actions_prompt(self):
         if self._recording:

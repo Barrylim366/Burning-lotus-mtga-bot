@@ -728,9 +728,9 @@ class Controller(ControllerSecondary):
         return (time.time() - self._last_account_switch_ts) >= self._account_switch_interval
 
     def _replay_recorded_logout(self) -> bool:
-        return self._replay_named_record("Account Switch", tag_prefix="LOGOUT")
+        return self._replay_named_record("Account Switch", tag_prefix="LOGOUT", allow_keys={"esc"})
 
-    def _replay_named_record(self, name: str, tag_prefix: str = "REPLAY") -> bool:
+    def _replay_named_record(self, name: str, tag_prefix: str = "REPLAY", allow_keys: set[str] | None = None) -> bool:
         path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "recorded_actions_records.json")
         )
@@ -776,6 +776,8 @@ class Controller(ControllerSecondary):
                 time.sleep(delay)
             if ev.get("type") == "key":
                 key_name = ev.get("key", "")
+                if allow_keys is not None and key_name not in allow_keys:
+                    continue
                 if key_name == "esc":
                     k.press(keyboard.Key.esc)
                     k.release(keyboard.Key.esc)
@@ -834,6 +836,8 @@ class Controller(ControllerSecondary):
         if elapsed < self._post_match_delay_sec:
             remaining = self._post_match_delay_sec - elapsed
             bot_logger.log_info(f"Post-match delay active ({remaining:.1f}s remaining).")
+            # Ensure we re-check when the delay elapses to avoid getting stuck at ~0s.
+            threading.Timer(max(0.1, remaining + 0.1), self._maybe_post_match_action).start()
             return
         if self._account_switch_pending or self._account_switch_due():
             bot_logger.log_info("Post-match UI ready; starting account switch.")
@@ -901,8 +905,22 @@ class Controller(ControllerSecondary):
                 bot_logger.log_error("Account switch failed: no accounts found in credentials file.")
                 self._account_switch_pending = False
                 return
+            bot_logger.log_info(
+                "Accounts loaded: count={} indices={}".format(
+                    len(accounts), [a.get("index") for a in accounts]
+                )
+            )
 
-            next_index = (self._account_cycle_index + 1) % len(accounts)
+            # Cycle order: Acc_2 -> Acc_3 -> Acc_1
+            if len(accounts) >= 3:
+                order = [1, 2, 0]
+                try:
+                    pos = order.index(self._account_cycle_index)
+                except ValueError:
+                    pos = 2  # default to Acc_1 position
+                next_index = order[(pos + 1) % len(order)]
+            else:
+                next_index = (self._account_cycle_index + 1) % len(accounts)
             account = accounts[next_index]
 
             bot_logger.log_info(f"Switching account to Acc_{next_index + 1}")
@@ -960,7 +978,7 @@ class Controller(ControllerSecondary):
                     time.sleep(0.1)
             if not self._stop_requested and not self._post_login_action_done:
                 for name in ("select game mode..", "select game mode and deck"):
-                    if self._replay_named_record(name, tag_prefix="POST_LOGIN"):
+                    if self._replay_named_record(name, tag_prefix="POST_LOGIN", allow_keys=set()):
                         self._post_login_action_done = True
                         break
             if not self._stop_requested and self._post_login_action_done:
