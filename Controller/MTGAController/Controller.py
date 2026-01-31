@@ -12,6 +12,19 @@ from Controller.Utilities.input_controller import InputControllerError, create_i
 import bot_logger
 
 _TARGET_FIELD_UNSET = object()
+_GUILD_COLOR_MAP = {
+    "azorius": "WU",
+    "dimir": "UB",
+    "rakdos": "RB",
+    "gruul": "RG",
+    "selesnya": "GW",
+    "orzhov": "WB",
+    "izzet": "UR",
+    "golgari": "BG",
+    "boros": "RW",
+    "simic": "UG",
+}
+_COLOR_LETTERS = set("WUBRG")
 
 
 class Controller(ControllerSecondary):
@@ -49,6 +62,7 @@ class Controller(ControllerSecondary):
             'queue_ready_marker': 'Unloading 1 Unused Serialized files (Serialized files now loaded:',
         }
         self.log_reader = LogReader(self.patterns.values(), log_path=log_path, callback=self.__log_callback)
+        self._log_path = log_path
         try:
             self.input = create_input_controller(input_backend)
         except InputControllerError as e:
@@ -178,6 +192,218 @@ class Controller(ControllerSecondary):
         # Fallback coords if recorded playback isn't available
         self.log_out_btn_coors = (1716, 851)
         self.log_out_ok_btn_coors = (1875, 809)
+
+    def _buttons_dir(self) -> str:
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "Buttons"))
+
+    def _click_image(self, image_path: str, label: str, confidence: float = 0.82, timeout: float = 20.0) -> bool:
+        try:
+            import pyautogui
+        except Exception as e:
+            bot_logger.log_error(f"{label}: pyautogui not available: {e}")
+            return False
+
+        if not os.path.exists(image_path):
+            bot_logger.log_error(f"{label}: image not found at {image_path}")
+            return False
+
+        start = time.time()
+        bot_logger.log_info(
+            f"{label}: searching image with confidence={confidence:.2f}, timeout={timeout:.1f}s."
+        )
+        while (time.time() - start) < timeout:
+            if self._stop_requested:
+                bot_logger.log_info(f"{label}: search aborted (stop requested).")
+                return False
+            try:
+                pos = pyautogui.locateCenterOnScreen(image_path, confidence=confidence)
+            except Exception:
+                pos = None
+            if pos:
+                x, y = int(pos.x), int(pos.y)
+                bot_logger.log_click(x, y, label)
+                self.input.move_abs(x, y)
+                time.sleep(0.1)
+                self.input.left_down()
+                time.sleep(0.06)
+                self.input.left_up()
+                return True
+            time.sleep(0.5)
+            if int((time.time() - start) * 10) % 20 == 0:
+                elapsed = time.time() - start
+                bot_logger.log_info(f"{label}: still searching ({elapsed:.1f}s elapsed).")
+        bot_logger.log_error(f"{label}: image not found within {timeout:.1f}s")
+        return False
+
+    def _read_log_tail(self, path: str, max_bytes: int = 600000) -> str:
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - max_bytes))
+                data = f.read()
+            return data.decode("utf-8", errors="ignore")
+        except Exception as e:
+            bot_logger.log_error(f"Failed to read player.log tail: {e}")
+            return ""
+
+    def _extract_latest_quests(self) -> list[dict]:
+        if not self._log_path:
+            return []
+        log_tail = self._read_log_tail(self._log_path)
+        if not log_tail:
+            return []
+        idx = log_tail.rfind('"quests"')
+        if idx == -1:
+            return []
+        start = log_tail.rfind("{", 0, idx)
+        if start == -1:
+            return []
+        decoder = json.JSONDecoder()
+        try:
+            payload, _ = decoder.raw_decode(log_tail[start:])
+        except Exception:
+            return []
+        quests = payload.get("quests", [])
+        if isinstance(quests, list):
+            return quests
+        return []
+
+    def _parse_guild_quests(self) -> list[dict]:
+        quests = self._extract_latest_quests()
+        parsed = []
+        bot_logger.log_info(f"Post-login: parsed {len(quests)} quest entries from player.log.")
+        for quest in quests:
+            loc_key = str(quest.get("locKey", "")).lower()
+            guild = None
+            for name in _GUILD_COLOR_MAP:
+                if name in loc_key:
+                    guild = name
+                    break
+            if not guild:
+                continue
+            gold = 0
+            chest = quest.get("chestDescription") or {}
+            loc_params = chest.get("locParams") or {}
+            if isinstance(loc_params, dict):
+                try:
+                    gold = int(loc_params.get("number1") or 0)
+                except (TypeError, ValueError):
+                    gold = 0
+            parsed.append({"guild": guild, "gold": gold})
+            bot_logger.log_info(f"Post-login: quest guild={guild} gold={gold}.")
+        return parsed
+
+    def _select_best_quest(self) -> dict | None:
+        quests = self._parse_guild_quests()
+        if not quests:
+            return None
+        quests.sort(key=lambda q: q.get("gold", 0), reverse=True)
+        return quests[0]
+
+    def _resolve_account_dir(self, account_index: int) -> str | None:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        target = f"acc{account_index + 1}"
+        try:
+            for entry in os.listdir(base_dir):
+                full = os.path.join(base_dir, entry)
+                if not os.path.isdir(full):
+                    continue
+                normalized = entry.lower().replace("_", "")
+                if normalized == target:
+                    return full
+        except Exception:
+            return None
+        return None
+
+    def _choose_deck_image(self, account_index: int, target_letters: str | None) -> str | None:
+        account_dir = self._resolve_account_dir(account_index)
+        if not account_dir:
+            bot_logger.log_error("Post-login: account folder not found.")
+            return None
+        images = []
+        for name in os.listdir(account_dir):
+            if name.lower().endswith((".png", ".jpg", ".jpeg")):
+                images.append(name)
+        if not images:
+            bot_logger.log_error("Post-login: no deck images found in account folder.")
+            return None
+        if not target_letters:
+            bot_logger.log_info(f"Post-login: no target letters; defaulting to {images[0]}.")
+            return os.path.join(account_dir, images[0])
+
+        target_set = set(target_letters.upper())
+        best = None
+        best_score = (-1, -999, 0, "")
+        for name in images:
+            name_letters = {ch for ch in name.upper() if ch in _COLOR_LETTERS}
+            score = len(name_letters & target_set)
+            extra = len(name_letters - target_set)
+            bot_logger.log_info(
+                f"Post-login: deck candidate={name} letters={''.join(sorted(name_letters))} "
+                f"score={score} extra={extra}."
+            )
+            tie = (score, -extra, -len(name), name.lower())
+            if tie > best_score:
+                best_score = tie
+                best = name
+        if best is None or best_score[0] <= 0:
+            bot_logger.log_info("Post-login: no strong deck match, using first image.")
+            return os.path.join(account_dir, images[0])
+        bot_logger.log_info(
+            f"Post-login: selected deck={best} with score={best_score[0]} extra={-best_score[1]}."
+        )
+        return os.path.join(account_dir, best)
+
+    def _run_post_login_routine(self, account_index: int) -> bool:
+        if self._stop_requested:
+            return False
+        quest = self._select_best_quest()
+        if quest:
+            guild = quest.get("guild")
+            gold = quest.get("gold", 0)
+            colors = _GUILD_COLOR_MAP.get(guild or "", "")
+            bot_logger.log_info(
+                f"Post-login: selected quest guild={guild} colors={colors} gold={gold}."
+            )
+        else:
+            guild = None
+            colors = ""
+            bot_logger.log_info("Post-login: no guild quests found; using fallback deck.")
+
+        deck_image = self._choose_deck_image(account_index, colors)
+        if not deck_image:
+            return False
+
+        buttons_dir = self._buttons_dir()
+        play_btn = os.path.join(buttons_dir, "play_btn.png")
+        find_btn = os.path.join(buttons_dir, "find_match_btn.png")
+        hist_btn = os.path.join(buttons_dir, "hist_play_btn.png")
+        decks_btn = os.path.join(buttons_dir, "my_decks.png")
+
+        bot_logger.log_info("Post-login: navigating Play > Find Match > Historic Play > My Decks.")
+        if not self._click_image(play_btn, "POST_LOGIN_PLAY"):
+            return False
+        time.sleep(1.0)
+        if not self._click_image(find_btn, "POST_LOGIN_FIND_MATCH"):
+            return False
+        time.sleep(1.0)
+        if not self._click_image(hist_btn, "POST_LOGIN_HIST_PLAY"):
+            return False
+        time.sleep(1.0)
+        if not self._click_image(decks_btn, "POST_LOGIN_MY_DECKS"):
+            return False
+        time.sleep(1.0)
+
+        bot_logger.log_info(f"Post-login: selecting deck image {os.path.basename(deck_image)}.")
+        if not self._click_image(deck_image, "POST_LOGIN_DECK"):
+            return False
+        time.sleep(1.0)
+        if not self._click_image(play_btn, "POST_LOGIN_PLAY_CONFIRM"):
+            return False
+
+        bot_logger.log_info("Post-login: deck selected and play clicked.")
+        return True
 
     def start_game_from_home_screen(self):
         if self._account_switch_in_progress or self._account_switch_due():
@@ -977,12 +1203,10 @@ class Controller(ControllerSecondary):
                         break
                     time.sleep(0.1)
             if not self._stop_requested and not self._post_login_action_done:
-                for name in ("select game mode..", "select game mode and deck"):
-                    if self._replay_named_record(name, tag_prefix="POST_LOGIN", allow_keys=set()):
-                        self._post_login_action_done = True
-                        break
+                if self._run_post_login_routine(next_index):
+                    self._post_login_action_done = True
             if not self._stop_requested and self._post_login_action_done:
-                bot_logger.log_info("Post-login action done; waiting 5s before queueing.")
+                bot_logger.log_info("Post-login routine done; waiting 5s before queueing.")
                 for _ in range(50):
                     if self._stop_requested:
                         break
