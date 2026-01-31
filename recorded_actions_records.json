@@ -253,47 +253,6 @@
           "key": "enter"
         }
       ]
-    },
-    {
-      "name": "select game mode and deck",
-      "created_at": "2026-01-29 16:11:02",
-      "actions": [
-        {
-          "type": "click",
-          "delay": 0.0,
-          "x": 2464,
-          "y": 1186,
-          "button": "left"
-        },
-        {
-          "type": "click",
-          "delay": 2.994042,
-          "x": 2483,
-          "y": 330,
-          "button": "left"
-        },
-        {
-          "type": "click",
-          "delay": 3.828005,
-          "x": 2348,
-          "y": 773,
-          "button": "left"
-        },
-        {
-          "type": "click",
-          "delay": 4.603972,
-          "x": 946,
-          "y": 546,
-          "button": "left"
-        },
-        {
-          "type": "click",
-          "delay": 3.68504,
-          "x": 1518,
-          "y": 817,
-          "button": "left"
-        }
-      ]
     }
   ]
 }
