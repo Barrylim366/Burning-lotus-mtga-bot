@@ -1157,10 +1157,13 @@ class SettingsWindow(tk.Toplevel):
         order = [var.get().strip() for var in getattr(self, "_order_vars", [])]
         order = [item for item in order if item]
         self._config_manager.set_account_play_order(order)
+        # When the order changes, start from the first entry next time.
+        self._config_manager.set_account_cycle_index(0)
         parent = getattr(self, "master", None)
         if parent and getattr(parent, "bot_running", False) and getattr(parent, "_controller", None):
             try:
                 parent._controller.set_account_play_order(order)
+                parent._controller.set_account_cycle_index(0)
             except Exception:
                 pass
 

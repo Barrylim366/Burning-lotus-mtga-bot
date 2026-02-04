@@ -46,7 +46,11 @@ Stop bot any time with **Mouse Wheel Down**.
 - Accounts are defined in `credentials.txt` (do not commit secrets).
 - Switch happens when the timer expires and the bot reaches a safe screen.
 - Logout/login uses recorded action sequence + credentials injection.
-- Order follows **Account Play Order** in Settings; if empty, default order is used.
+- Login wait before typing credentials: 5 seconds.
+- Post-login wait before running the recorded action: 20 seconds.
+- Order follows **Account Play Order** in Settings; the first entry is used as the next switch target.
+  After each switch, the bot advances to the next entry in the list.
+  Changing the order resets the cycle to the first entry.
 
 ## Quest-Based Deck Selection
 
@@ -56,12 +60,15 @@ After account switch the bot:
 3) selects a deck image from `Acc_1/Acc_2/Acc_3` folder that best matches quest colors
 
 Deck images are matched by filename letters (e.g. `RG.png`, `WU.png`, `R.png`).
+The `Acc_1`, `Acc_2`, `Acc_3` and `Buttons` folders are kept in Git, but their
+contents are ignored (see .gitignore). Keep your local images there.
 
 ## Card Data Updates
 
 On startup:
 - MTGA card DB export refreshes `cards.json` if the local MTGA data changed.
 - Scryfall bulk delta check fetches new Arena IDs and merges missing cards.
+If `cards.json` is missing on first run, it will be generated automatically.
 
 Fallback:
 - `missing_cards.json` tracks cards encountered in matches but not in `cards.json`.
@@ -71,4 +78,3 @@ Fallback:
 - `bot.log` – main bot debug
 - `human.log` – high-level actions
 - `bot_gui_subprocess.log` – UI subprocess log (if used)
-
