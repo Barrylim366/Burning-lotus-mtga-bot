@@ -177,6 +177,8 @@ class Controller(ControllerSecondary):
         self._credentials_path = credentials_path or ""
         self._account_cycle_index = int(account_cycle_index or 0)
         self._account_play_order = account_play_order or []
+        if self._account_play_order:
+            bot_logger.log_info(f"Account play order configured: {self._account_play_order}")
         self._last_account_switch_ts = time.time()
         self._account_switch_pending = False
         self._account_switch_in_progress = False
@@ -189,8 +191,9 @@ class Controller(ControllerSecondary):
         self._post_match_delay_sec = 30
         self._stop_requested = False
         self._post_login_action_done = False
+        self._suppress_selections = False
         # Fixed timing for login phase
-        self._login_delete_delay_sec = 20.0
+        self._login_delete_delay_sec = 10.0
         # Fallback coords if recorded playback isn't available
         self.log_out_btn_coors = (1716, 851)
         self.log_out_ok_btn_coors = (1875, 809)
@@ -429,6 +432,9 @@ class Controller(ControllerSecondary):
 
     def start_game(self) -> None:
         self._stop_requested = False
+        if self._account_play_order:
+            bot_logger.log_info(f"Account play order active: {self._account_play_order}")
+            bot_logger.log_info(f"Account play order start index: {self._account_cycle_index}")
         self.start_monitor()
         self.start_queueing()
 
@@ -484,6 +490,36 @@ class Controller(ControllerSecondary):
         except Exception:
             # UI stop should never crash; at worst the monitor thread will exit on process end.
             pass
+
+        # Disable any further input actions (timers may still fire briefly).
+        self._disable_input()
+
+    def _disable_input(self) -> None:
+        """Replace input methods with no-ops to avoid any actions after Stop."""
+        if not getattr(self, "input", None):
+            return
+        def _noop(*_args, **_kwargs):
+            return None
+        for name in (
+            "move_abs",
+            "move_rel",
+            "left_click",
+            "left_down",
+            "left_up",
+            "tap_enter",
+            "tap_shift_enter",
+            "tap_tab",
+            "tap_delete",
+            "type_text",
+            "tap_escape",
+            "tap_printscreen",
+            "tap_win_printscreen",
+        ):
+            if hasattr(self.input, name):
+                try:
+                    setattr(self.input, name, _noop)
+                except Exception:
+                    pass
 
     def cast(self, card_id: int) -> None:
         # Clear any stale hover events from previous scans
@@ -831,6 +867,7 @@ class Controller(ControllerSecondary):
         if self._stop_requested:
             bot_logger.log_info("Dismiss end screen skipped: stop requested.")
             return
+        self._suppress_selections = False
         # Click in center of screen to dismiss end screen
         center_x = (self.screen_bounds[0][0] + self.screen_bounds[1][0]) // 2
         center_y = (self.screen_bounds[0][1] + self.screen_bounds[1][1]) // 2
@@ -863,6 +900,7 @@ class Controller(ControllerSecondary):
         self.__system_seat_id = None
         self.__last_match_won = None
         self.__attack_target_required = False
+        self._suppress_selections = False
         self.updated_game_state = GameState()
         self.__inst_id_grp_id_dict = {}
         # Cancel any pending decision timers
@@ -931,6 +969,12 @@ class Controller(ControllerSecondary):
                 self._stop_queue_spam = True
         elif pattern == self.patterns["match_completed"]:
             bot_logger.log_info("Detected match completed event")
+            self._suppress_selections = True
+            self.__pending_select_n = None
+            self.__pending_target_select = None
+            remaining = self.get_account_switch_remaining_sec()
+            if self._account_switch_interval > 0:
+                bot_logger.log_info(f"Account switch ETA: {remaining}s remaining.")
             outcome = self.__infer_match_won(line_containing_pattern)
             if outcome is not None:
                 self.__last_match_won = outcome
@@ -958,6 +1002,29 @@ class Controller(ControllerSecondary):
         if self._account_switch_interval <= 0:
             return False
         return (time.time() - self._last_account_switch_ts) >= self._account_switch_interval
+
+    def get_account_switch_remaining_sec(self) -> int:
+        """Seconds remaining until next account switch (0 if disabled or due)."""
+        if self._account_switch_interval <= 0:
+            return 0
+        remaining = int(self._account_switch_interval - (time.time() - self._last_account_switch_ts))
+        return max(0, remaining)
+
+    def get_account_switch_interval_minutes(self) -> int:
+        return int(self._account_switch_interval // 60) if self._account_switch_interval else 0
+
+    def set_account_play_order(self, order: list[str]) -> None:
+        self._account_play_order = order or []
+        if self._account_play_order:
+            bot_logger.log_info(f"Account play order updated: {self._account_play_order}")
+        else:
+            bot_logger.log_info("Account play order cleared.")
+
+    def set_account_cycle_index(self, index: int) -> None:
+        try:
+            self._account_cycle_index = int(index)
+        except (TypeError, ValueError):
+            self._account_cycle_index = 0
 
     def _replay_recorded_logout(self) -> bool:
         return self._replay_named_record("Account Switch", tag_prefix="LOGOUT", allow_keys={"esc"})
@@ -1143,29 +1210,25 @@ class Controller(ControllerSecondary):
                     len(accounts), [a.get("index") for a in accounts]
                 )
             )
+            if self._account_play_order:
+                bot_logger.log_info(f"Account play order configured: {self._account_play_order}")
 
             custom_order = self._resolve_account_play_order(accounts)
+            bot_logger.log_info(f"Account play order resolved indices: {custom_order}")
             if custom_order:
-                if len(custom_order) == 1:
-                    target_index = custom_order[0]
-                    if target_index == self._account_cycle_index:
-                        bot_logger.log_info("Account switch skipped: only one account in play order.")
-                        self._last_account_switch_ts = time.time()
-                        self._account_switch_pending = False
-                        self._account_switch_in_progress = False
-                        if not self._stop_requested:
-                            self.start_queueing()
-                        return
-                    next_index = target_index
+                order_len = len(custom_order)
+                if order_len == 1:
+                    next_pos = 0
+                    next_index = custom_order[0]
                 else:
-                    try:
-                        pos = custom_order.index(self._account_cycle_index)
-                    except ValueError:
-                        pos = -1
-                    if pos == -1:
-                        next_index = custom_order[0]
-                    else:
-                        next_index = custom_order[(pos + 1) % len(custom_order)]
+                    # Treat account_cycle_index as position in the custom order list.
+                    pos = self._account_cycle_index
+                    if pos < 0 or pos >= order_len:
+                        pos = 0
+                    next_pos = (pos + 1) % order_len
+                    next_index = custom_order[next_pos]
+                bot_logger.log_info(f"Account play order (indices): {custom_order}")
+                bot_logger.log_info(f"Account play order pos: {self._account_cycle_index} -> {next_pos}")
             else:
                 # Default cycle order: Acc_2 -> Acc_3 -> Acc_1
                 if len(accounts) >= 3:
@@ -1180,7 +1243,10 @@ class Controller(ControllerSecondary):
             account = accounts[next_index]
 
             bot_logger.log_info(f"Switching account to Acc_{next_index + 1}")
-            bot_logger.log_info(f"Account cycle index: {self._account_cycle_index} -> {next_index}")
+            if custom_order:
+                bot_logger.log_info(f"Account cycle index (order pos): {self._account_cycle_index} -> {next_pos}")
+            else:
+                bot_logger.log_info(f"Account cycle index: {self._account_cycle_index} -> {next_index}")
             self._post_login_action_done = False
             if not self._replay_recorded_logout():
                 bot_logger.log_info("Recorded logout replay unavailable; falling back to fixed logout clicks.")
@@ -1250,7 +1316,10 @@ class Controller(ControllerSecondary):
                     self.start_queueing()
                     queued_after_login = True
 
-            self._account_cycle_index = next_index
+            if custom_order:
+                self._account_cycle_index = next_pos
+            else:
+                self._account_cycle_index = next_index
             self._last_account_switch_ts = time.time()
             self._account_switch_pending = False
             if not queued_after_login:
@@ -1278,7 +1347,7 @@ class Controller(ControllerSecondary):
             if not name:
                 continue
             num = None
-            m = re.search(r"acc[_-]?(\\d+)", name)
+            m = re.search(r"acc[_-]?(\d+)", name)
             if m:
                 try:
                     num = int(m.group(1))
@@ -1339,6 +1408,9 @@ class Controller(ControllerSecondary):
 
     def __handle_select_n_req(self, line: str) -> None:
         try:
+            if self._suppress_selections or self._stop_requested:
+                bot_logger.log_info("SelectN ignored: selections suppressed or stop requested.")
+                return
             start = line.find("{")
             if start == -1:
                 return
@@ -1401,6 +1473,9 @@ class Controller(ControllerSecondary):
 
                 def _attempt_selection(attempt: int, delay: float) -> None:
                     def _do_selection():
+                        if self._suppress_selections or self._stop_requested:
+                            self.__pending_select_n = None
+                            return
                         selected = 0
                         selected_ids: list[int] = []
                         clicks = 1 if attempt == 1 else 2
@@ -1435,6 +1510,9 @@ class Controller(ControllerSecondary):
 
     def __handle_select_targets_req(self, line: str) -> None:
         try:
+            if self._suppress_selections or self._stop_requested:
+                bot_logger.log_info("SelectTargets ignored: selections suppressed or stop requested.")
+                return
             start = line.find("{")
             if start == -1:
                 return
@@ -1531,6 +1609,8 @@ class Controller(ControllerSecondary):
 
     def __schedule_target_selection(self, source_id: int | None, reason: str) -> None:
         now = time.time()
+        if self._suppress_selections or self._stop_requested:
+            return
         if source_id is None:
             source_id = -1
         if self.__last_target_select_source_id == source_id and now - self.__last_target_select_ts < 1.0:
@@ -1568,6 +1648,8 @@ class Controller(ControllerSecondary):
                     threading.Timer(0.8, _attempt_submit).start()
 
         def _do_click():
+            if self._suppress_selections or self._stop_requested:
+                return
             if _attempt_submit():
                 return
             pending = self.__pending_target_select or {}
@@ -1600,6 +1682,9 @@ class Controller(ControllerSecondary):
         return False
 
     def __should_pause_for_select_n(self) -> bool:
+        if self._suppress_selections:
+            self.__pending_select_n = None
+            return False
         if not self.__pending_select_n:
             return False
         ts = self.__pending_select_n.get("ts", 0.0)

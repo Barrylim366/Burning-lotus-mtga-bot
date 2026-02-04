@@ -6,6 +6,7 @@ import os
 CARD_DATA_PATH = "cards.json"
 SCRYFALL_CACHE_PATH = "scryfall_cache.json"
 MISSING_CARDS_PATH = "missing_cards.json"
+SCRYFALL_BULK_META_PATH = "scryfall_bulk_metadata.json"
 _card_data = []
 _scryfall_cache = {}
 
@@ -67,6 +68,96 @@ def _fetch_card_info_from_scryfall(arena_id: int) -> dict | None:
         return card
     except Exception:
         return None
+
+
+def _load_scryfall_bulk_metadata() -> dict:
+    if not os.path.exists(SCRYFALL_BULK_META_PATH):
+        return {}
+    try:
+        with open(SCRYFALL_BULK_META_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_scryfall_bulk_metadata(meta: dict) -> None:
+    try:
+        with open(SCRYFALL_BULK_META_PATH, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except Exception:
+        pass
+
+
+def refresh_cards_from_scryfall_bulk_if_needed() -> None:
+    """
+    Delta-refresh: check Scryfall bulk metadata and only download if updated.
+    We merge any missing Arena IDs into cards.json without overwriting MTGA export data.
+    """
+    try:
+        req = urllib.request.Request(
+            "https://api.scryfall.com/bulk-data",
+            headers={"User-Agent": "MTGABot/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return
+
+    bulk_items = data.get("data", [])
+    default_bulk = next((b for b in bulk_items if b.get("type") == "default_cards"), None)
+    if not isinstance(default_bulk, dict):
+        return
+
+    updated_at = default_bulk.get("updated_at", "")
+    download_uri = default_bulk.get("download_uri", "")
+    if not updated_at or not download_uri:
+        return
+
+    meta = _load_scryfall_bulk_metadata()
+    if meta.get("updated_at") == updated_at:
+        return
+
+    try:
+        req = urllib.request.Request(download_uri, headers={"User-Agent": "MTGABot/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            bulk_cards = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return
+
+    if not isinstance(bulk_cards, list):
+        return
+
+    existing_ids = {card.get("grpId") for card in _card_data if isinstance(card, dict)}
+    added = 0
+    for card in bulk_cards:
+        if not isinstance(card, dict):
+            continue
+        arena_id = card.get("arena_id")
+        if arena_id is None or arena_id in existing_ids:
+            continue
+        entry = {
+            "grpId": arena_id,
+            "titleId": card.get("oracle_id"),
+            "manaCost": card.get("mana_cost", ""),
+            "colors": card.get("colors", []),
+            "types": card.get("type_line", "").replace("â€”", "-").split(),
+            "setCode": card.get("set", "").upper(),
+            "rarity": card.get("rarity", ""),
+            "name": card.get("name", f"Card#{arena_id}"),
+        }
+        _card_data.append(entry)
+        existing_ids.add(arena_id)
+        added += 1
+
+    if added:
+        try:
+            with open(CARD_DATA_PATH, "w", encoding="utf-8") as f:
+                json.dump(_card_data, f, indent=2)
+        except Exception:
+            pass
+
+    _save_scryfall_bulk_metadata({"updated_at": updated_at})
 
 
 def refresh_missing_cards() -> None:

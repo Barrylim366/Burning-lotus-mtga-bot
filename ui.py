@@ -637,8 +637,28 @@ class MTGBotUI(tk.Tk):
         self.session_games = 0
         self.session_wins = 0
         self.settings_window = None
+        self._controller = None
 
         self._setup_ui()
+        self._setup_stop_hotkey()
+
+    def _setup_stop_hotkey(self):
+        # Global hotkey via pynput (mouse wheel down).
+        try:
+            from pynput import mouse
+        except Exception:
+            mouse = None
+
+        if mouse:
+            try:
+                def _on_scroll(_x, _y, _dx, dy):
+                    if dy < 0:
+                        self.after(0, self._stop_bot)
+                self._stop_mouse_listener = mouse.Listener(on_scroll=_on_scroll)
+                self._stop_mouse_listener.daemon = True
+                self._stop_mouse_listener.start()
+            except Exception:
+                pass
 
     def _setup_ui(self):
         # Main container with grid
@@ -707,7 +727,7 @@ class MTGBotUI(tk.Tk):
         self.start_btn.pack(pady=btn_pady)
 
         # Stop Button
-        self.stop_btn = tk.Button(buttons_frame, text="Stop Bot", command=self._stop_bot,
+        self.stop_btn = tk.Button(buttons_frame, text="Stop Bot [Wheel Down]", command=self._stop_bot,
                                   bg="#5a2d2d", fg="white", font=btn_font,
                                   activebackground="#6a3d3d", activeforeground="white",
                                   relief=tk.FLAT, width=btn_width, height=btn_height,
@@ -737,6 +757,14 @@ class MTGBotUI(tk.Tk):
         self.status_label = tk.Label(status_frame, text="Status: Stopped", bg="#1e1e1e",
                                     fg="#ff6666", font=("Segoe UI", 10))
         self.status_label.pack()
+        self.switch_eta_label = tk.Label(
+            status_frame,
+            text="",
+            bg="#1e1e1e",
+            fg="#66ff66",
+            font=("Segoe UI", 10),
+        )
+        self.switch_eta_label.pack()
 
     def _start_bot(self):
         if self.bot_running:
@@ -747,10 +775,12 @@ class MTGBotUI(tk.Tk):
         self.stop_btn.config(state=tk.NORMAL)
         self.calibrate_btn.config(state=tk.DISABLED)
         self.status_label.config(text="Status: Running", fg="#66ff66")
+        self.switch_eta_label.config(text="0 Min till Account Switch (off)", fg="#66ff66")
 
         # Start bot in separate thread
         self.bot_thread = threading.Thread(target=self._run_bot, daemon=True)
         self.bot_thread.start()
+        self._update_switch_eta()
 
     def _run_bot(self):
         try:
@@ -762,13 +792,13 @@ class MTGBotUI(tk.Tk):
             credentials_path = self.config_manager.get_credentials_path()
             account_cycle_index = self.config_manager.get_account_cycle_index()
             account_play_order = self.config_manager.get_account_play_order()
-
             controller = Controller(log_path=log_path, screen_bounds=screen_bounds,
                                    click_targets=click_targets, input_backend=input_backend,
                                    account_switch_minutes=account_switch_minutes,
                                    credentials_path=credentials_path,
                                    account_cycle_index=account_cycle_index,
                                    account_play_order=account_play_order)
+            self._controller = controller
             ai = DummyAI()
             self.game = Game(controller, ai)
             self.game.start()
@@ -814,6 +844,9 @@ class MTGBotUI(tk.Tk):
         self.stop_btn.config(state=tk.DISABLED)
         self.calibrate_btn.config(state=tk.NORMAL)
         self.status_label.config(text="Status: Stopped", fg="#ff6666")
+        self.switch_eta_label.config(text="")
+        self._controller = None
+        self.switch_eta_label.config(text="")
 
     def _open_calibration(self):
         CalibrationWindow(self, self.config_manager)
@@ -828,6 +861,24 @@ class MTGBotUI(tk.Tk):
     def _update_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
             self.settings_window.update_stats(self.session_games, self.session_wins)
+
+    def _update_switch_eta(self):
+        if not self.bot_running:
+            return
+        minutes = 0
+        interval_minutes = self.config_manager.get_account_switch_minutes()
+        try:
+            if getattr(self, "_controller", None):
+                remaining_sec = self._controller.get_account_switch_remaining_sec()
+                minutes = int((remaining_sec + 59) / 60) if remaining_sec > 0 else 0
+                interval_minutes = self._controller.get_account_switch_interval_minutes()
+        except Exception:
+            minutes = 0
+        if interval_minutes <= 0:
+            self.switch_eta_label.config(text="0 Min till Account Switch (off)")
+        else:
+            self.switch_eta_label.config(text=f"{minutes} Min till Account Switch")
+        self.after(10000, self._update_switch_eta)
 
 
 class SettingsWindow(tk.Toplevel):
@@ -1004,6 +1055,20 @@ class SettingsWindow(tk.Toplevel):
             self._order_vars.append(var)
             self._order_boxes.append(combo)
 
+        reset_order_btn = tk.Button(
+            order_row,
+            text="Reset Order Index",
+            command=self._reset_account_play_order_index,
+            bg="#3a3a3a",
+            fg="white",
+            activebackground="#444444",
+            activeforeground="white",
+            relief=tk.FLAT,
+            padx=8,
+            pady=2,
+        )
+        reset_order_btn.pack(side=tk.RIGHT)
+
         record_row = tk.Frame(frame, bg="#2b2b2b")
         record_row.pack(fill=tk.X, pady=(12, 0))
 
@@ -1092,6 +1157,26 @@ class SettingsWindow(tk.Toplevel):
         order = [var.get().strip() for var in getattr(self, "_order_vars", [])]
         order = [item for item in order if item]
         self._config_manager.set_account_play_order(order)
+        parent = getattr(self, "master", None)
+        if parent and getattr(parent, "bot_running", False) and getattr(parent, "_controller", None):
+            try:
+                parent._controller.set_account_play_order(order)
+            except Exception:
+                pass
+
+    def _reset_account_play_order_index(self):
+        self._config_manager.set_account_cycle_index(0)
+        # Clear dropdown selections as requested
+        for var in getattr(self, "_order_vars", []):
+            var.set("")
+        self._config_manager.set_account_play_order([])
+        parent = getattr(self, "master", None)
+        if parent and getattr(parent, "bot_running", False) and getattr(parent, "_controller", None):
+            try:
+                parent._controller.set_account_play_order([])
+                parent._controller.set_account_cycle_index(0)
+            except Exception:
+                pass
 
     def _debounced_save_switch_minutes(self, _event=None):
         if self._switch_save_job:
