@@ -51,17 +51,17 @@ class Game:
         if self._stop_requested:
             self._debug("Match ended but stop requested - not restarting")
             return
-        self._debug("Match ended - scheduling restart in 20 seconds")
+        self._debug("Match ended - scheduling restart in 10 seconds")
         self._human_log("\n=== MATCH ENDED ===")
         if won is True:
             self._human_log("Result: WIN")
         elif won is False:
             self._human_log("Result: LOSS")
-        self._human_log("Restarting in 20 seconds...\n")
+        self._human_log("Restarting in 10 seconds...\n")
         # Stop inactivity timer since match ended
         if hasattr(self.controller, 'stop_inactivity_timer'):
             self.controller.stop_inactivity_timer()
-        restart_timer = threading.Timer(20.0, self._restart_game)
+        restart_timer = threading.Timer(10.0, self._restart_game)
         self._timers.append(restart_timer)
         restart_timer.start()
 
@@ -174,6 +174,11 @@ class Game:
                 self._debug("Card data refresh: cards.json reloaded into memory.")
             except Exception as e:
                 self._debug(f"Card data refresh: reload failed: {e}")
+            try:
+                CardInfo.refresh_cards_from_scryfall_bulk_if_needed()
+                self._debug("Card data refresh: Scryfall bulk delta check done.")
+            except Exception as e:
+                self._debug(f"Card data refresh: Scryfall bulk delta failed: {e}")
         except Exception as e:
             self._debug(f"Card data refresh failed: {e}")
 
