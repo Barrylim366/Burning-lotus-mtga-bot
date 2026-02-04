@@ -69,17 +69,12 @@ class DummyAI(AIKernel):
         return mana_colors, total_sources, sources
 
     def _can_cast_with_mana_cost(self, action_mana_cost, available_colors, total_mana, sources):
-        """Check if we can pay a mana cost from the action's manaCost field.
+        """Check if we can pay a mana cost from the action's manaCost field."""
+        return self._can_cast_with_mana_costs(action_mana_cost, available_colors, total_mana, sources)
 
-        Parameters:
-            action_mana_cost: List like [{'color': ['ManaColor_Red'], 'count': 1}, ...]
-            available_colors: Set of available color strings
-            total_mana: Total number of mana sources
-            sources: List of sets of colors per mana source
-        Returns:
-            True if we can pay the cost
-        """
-        if not action_mana_cost:
+    def _can_cast_with_mana_costs(self, combined_mana_cost, available_colors, total_mana, sources):
+        """Check if we can pay combined mana costs (multiple spells)."""
+        if not combined_mana_cost:
             return True
 
         color_map = {
@@ -93,7 +88,7 @@ class DummyAI(AIKernel):
 
         total_needed = 0
         colored_requirements = []
-        for cost_entry in action_mana_cost:
+        for cost_entry in combined_mana_cost:
             colors = cost_entry.get('color', [])
             count = cost_entry.get('count', 0)
             total_needed += count
@@ -267,6 +262,82 @@ class DummyAI(AIKernel):
             return instance_id, ability_grp_id
         return None
 
+    def _select_cast_action_max_mana(self, cast_actions, available_colors, total_mana, sources):
+        """Select a cast action that maximizes mana usage this turn.
+
+        Strategy:
+        1) Maximize total CMC spent (<= total_mana).
+        2) If multiple ways spend the same total, prefer fewer spells.
+        3) If still tied, prefer plans containing higher CMC spells.
+        """
+        if not cast_actions:
+            return None
+
+        actions = [a for a in cast_actions if a[0] <= total_mana]
+        if not actions:
+            return None
+
+        cmc_suffix = [0] * (len(actions) + 1)
+        for i in range(len(actions) - 1, -1, -1):
+            cmc_suffix[i] = cmc_suffix[i + 1] + actions[i][0]
+
+        best = None  # (spent, count, max_cmc, indices)
+
+        def _better(a, b):
+            if b is None:
+                return True
+            if a[0] != b[0]:
+                return a[0] > b[0]
+            if a[1] != b[1]:
+                return a[1] < b[1]
+            return a[2] > b[2]
+
+        def _dfs(idx, spent, count, max_cmc, indices, combined_costs):
+            nonlocal best
+            if spent > total_mana:
+                return
+            if best and spent + cmc_suffix[idx] < best[0]:
+                return
+            if count > 0 and not self._can_cast_with_mana_costs(
+                combined_costs, available_colors, total_mana, sources
+            ):
+                return
+            if count > 0:
+                cand = (spent, count, max_cmc, list(indices))
+                if _better(cand, best):
+                    best = cand
+            if idx >= len(actions):
+                return
+
+            cmc, _instance_id, _card_name, _mana_cost_str, action_mana_cost = actions[idx]
+            _dfs(
+                idx + 1,
+                spent + cmc,
+                count + 1,
+                max(max_cmc, cmc),
+                indices + [idx],
+                combined_costs + list(action_mana_cost or []),
+            )
+            _dfs(idx + 1, spent, count, max_cmc, indices, combined_costs)
+
+        _dfs(0, 0, 0, 0, [], [])
+
+        if not best:
+            return None
+
+        best_spent, plan_count, plan_max, plan_indices = best
+        if plan_count == 1:
+            chosen_index = plan_indices[0]
+        else:
+            chosen_index = max(plan_indices, key=lambda i: actions[i][0])
+
+        chosen = actions[chosen_index]
+        self._debug(
+            f"Mana plan: total_mana={total_mana}, spent={best_spent}, "
+            f"count={plan_count}, max_cmc={plan_max}, chosen={chosen[2]}"
+        )
+        return chosen
+
     def generate_keep(self, card_list) -> bool:
         self._debug("generate_keep called - keeping hand")
         return True
@@ -387,56 +458,14 @@ class DummyAI(AIKernel):
                             self.__has_land_been_played_this_turn = True
                             return move
 
-                    # Second: try to cast a creature
-                    # Use the manaCost from the action to check color requirements
+                    # Second: cast any spell to maximize mana usage (category-agnostic)
                     cast_actions = []
-                    for action_wrapper in action_list:
-                        action = action_wrapper.get('action', {})
-                        if action.get('actionType') == 'ActionType_Cast':
-                            instance_id = action.get('instanceId')
-                            action_mana_cost = action.get('manaCost', [])
-                            grp_id = action.get('grpId') or inst_id_grp_id_dict.get(instance_id)
-                            card_info = CardInfo.get_card_info(grp_id)
-
-                            if not card_info:
-                                self._debug(f"No card info for grpId={grp_id}")
-                                continue
-
-                            card_types = card_info.get('types', [])
-                            if 'Creature' not in card_types:
-                                continue
-
-                            card_name = card_info.get('name', f'Card#{instance_id}')
-                            mana_cost_str = card_info.get('manaCost', '')
-                            cmc = CardInfo.calculate_cmc(mana_cost_str)
-
-                            # Check if we can pay the mana cost (color + total)
-                            if self._can_cast_with_mana_cost(action_mana_cost, available_colors, total_mana, sources):
-                                cast_actions.append((cmc, instance_id, card_name, mana_cost_str))
-                                self._debug(f"Can cast: {card_name} (cost={mana_cost_str}, cmc={cmc})")
-                            else:
-                                self._debug(f"Cannot cast {card_name} (cost={mana_cost_str}, colors={available_colors}, mana={total_mana})")
-
-                    # Cast the cheapest creature we can afford
-                    if cast_actions:
-                        cast_actions.sort(key=lambda x: x[0])  # Sort by CMC
-                        cmc, instance_id, card_name, mana_cost = cast_actions[0]
-                        self._debug(f"CASTING: {card_name} (instanceId={instance_id}, cost={mana_cost})")
-                        if sorcery_in_actions:
-                            self._debug(
-                                f"Sorcery debug: found={sorcery_in_actions} in actions, "
-                                f"skipping due to creature priority. Examples={sorcery_names[:3]}"
-                            )
-                        move = {'cast': [instance_id]}
-                        return move
-
-                    # Third: cast non-creature spells (Instant/Sorcery) face
-                    spell_actions = []
                     allow_sorcery = phase in ['Phase_Main1', 'Phase_Main2']
                     sorcery_found = 0
                     sorcery_castable = 0
                     sorcery_blocked_phase = 0
                     sorcery_blocked_mana = 0
+
                     for action_wrapper in action_list:
                         action = action_wrapper.get('action', {})
                         if action.get('actionType') != 'ActionType_Cast':
@@ -445,15 +474,13 @@ class DummyAI(AIKernel):
                         action_mana_cost = action.get('manaCost', [])
                         grp_id = action.get('grpId') or inst_id_grp_id_dict.get(instance_id)
                         card_info = CardInfo.get_card_info(grp_id)
+
                         if not card_info:
+                            self._debug(f"No card info for grpId={grp_id}")
                             continue
+
                         card_types = card_info.get('types', [])
-                        if 'Creature' in card_types:
-                            continue
-                        is_instant = 'Instant' in card_types
                         is_sorcery = 'Sorcery' in card_types
-                        if not is_instant and not is_sorcery:
-                            continue
                         if is_sorcery and not allow_sorcery:
                             sorcery_found += 1
                             sorcery_blocked_phase += 1
@@ -462,69 +489,43 @@ class DummyAI(AIKernel):
                         card_name = card_info.get('name', f'Card#{instance_id}')
                         mana_cost_str = card_info.get('manaCost', '')
                         cmc = CardInfo.calculate_cmc(mana_cost_str)
+
+                        # Check if we can pay the mana cost (color + total)
                         if self._can_cast_with_mana_cost(action_mana_cost, available_colors, total_mana, sources):
-                            spell_actions.append((cmc, instance_id, card_name, mana_cost_str))
-                            self._debug(f"Can cast spell: {card_name} (cost={mana_cost_str}, cmc={cmc})")
+                            cast_actions.append((cmc, instance_id, card_name, mana_cost_str, action_mana_cost))
+                            self._debug(f"Can cast: {card_name} (cost={mana_cost_str}, cmc={cmc})")
                             if is_sorcery:
                                 sorcery_found += 1
                                 sorcery_castable += 1
                         else:
+                            self._debug(
+                                f"Cannot cast {card_name} (cost={mana_cost_str}, colors={available_colors}, "
+                                f"mana={total_mana})"
+                            )
                             if is_sorcery:
                                 sorcery_found += 1
                                 sorcery_blocked_mana += 1
 
-                    if spell_actions:
-                        spell_actions.sort(key=lambda x: x[0])
-                        cmc, instance_id, card_name, mana_cost = spell_actions[0]
-                        self._debug(f"CASTING SPELL: {card_name} (instanceId={instance_id}, cost={mana_cost})")
-                        if sorcery_found:
-                            self._debug(
-                                f"Sorcery debug: found={sorcery_found}, castable={sorcery_castable}, "
-                                f"blocked_phase={sorcery_blocked_phase}, blocked_mana={sorcery_blocked_mana}"
-                            )
-                        move = {'cast': [instance_id]}
-                        return move
+                    if cast_actions:
+                        chosen = self._select_cast_action_max_mana(
+                            cast_actions, available_colors, total_mana, sources
+                        )
+                        if chosen:
+                            cmc, instance_id, card_name, mana_cost, _action_mana_cost = chosen
+                            self._debug(f"CASTING: {card_name} (instanceId={instance_id}, cost={mana_cost})")
+                            if sorcery_found:
+                                self._debug(
+                                    f"Sorcery debug: found={sorcery_found}, castable={sorcery_castable}, "
+                                    f"blocked_phase={sorcery_blocked_phase}, blocked_mana={sorcery_blocked_mana}"
+                                )
+                            move = {'cast': [instance_id]}
+                            return move
+
                     if sorcery_found:
                         self._debug(
                             f"Sorcery debug: no spell cast. found={sorcery_found}, castable={sorcery_castable}, "
                             f"blocked_phase={sorcery_blocked_phase}, blocked_mana={sorcery_blocked_mana}"
                         )
-
-                    # Last: cast enchantments in main phase
-                    if phase in ['Phase_Main1', 'Phase_Main2']:
-                        enchant_actions = []
-                        for action_wrapper in action_list:
-                            action = action_wrapper.get('action', {})
-                            if action.get('actionType') != 'ActionType_Cast':
-                                continue
-                            instance_id = action.get('instanceId')
-                            action_mana_cost = action.get('manaCost', [])
-                            grp_id = action.get('grpId') or inst_id_grp_id_dict.get(instance_id)
-                            card_info = CardInfo.get_card_info(grp_id)
-                            if not card_info:
-                                continue
-                            card_types = card_info.get('types', [])
-                            if 'Enchantment' not in card_types:
-                                continue
-
-                            card_name = card_info.get('name', f'Card#{instance_id}')
-                            mana_cost_str = card_info.get('manaCost', '')
-                            cmc = CardInfo.calculate_cmc(mana_cost_str)
-                            if self._can_cast_with_mana_cost(action_mana_cost, available_colors, total_mana, sources):
-                                enchant_actions.append((cmc, instance_id, card_name, mana_cost_str))
-                                self._debug(f"Can cast enchantment: {card_name} (cost={mana_cost_str}, cmc={cmc})")
-
-                        if enchant_actions:
-                            enchant_actions.sort(key=lambda x: x[0])
-                            cmc, instance_id, card_name, mana_cost = enchant_actions[0]
-                            self._debug(f"CASTING ENCHANTMENT: {card_name} (instanceId={instance_id}, cost={mana_cost})")
-                            if sorcery_in_actions:
-                                self._debug(
-                                    f"Sorcery debug: found={sorcery_in_actions} in actions, "
-                                    f"skipping due to enchantment priority. Examples={sorcery_names[:3]}"
-                                )
-                            move = {'cast': [instance_id]}
-                            return move
 
             self._debug(f"Returning default move: {move}")
             return move

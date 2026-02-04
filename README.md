@@ -63,6 +63,14 @@ Deck images are matched by filename letters (e.g. `RG.png`, `WU.png`, `R.png`).
 The `Acc_1`, `Acc_2`, `Acc_3` and `Buttons` folders are kept in Git, but their
 contents are ignored (see .gitignore). Keep your local images there.
 
+## Casting Logic
+
+In main phases the bot tries to use as much available mana as possible across all castable spells:
+- It chooses casts that maximize total CMC spent this turn.
+- If multiple options spend the same total, it prefers a single higher-cost spell
+  over multiple cheaper spells.
+- Multi-spell plans are validated against color requirements, not just CMC.
+
 ## Card Data Updates
 
 On startup:
