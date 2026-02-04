@@ -193,7 +193,7 @@ class Controller(ControllerSecondary):
         self._post_login_action_done = False
         self._suppress_selections = False
         # Fixed timing for login phase
-        self._login_delete_delay_sec = 10.0
+        self._login_delete_delay_sec = 5.0
         # Fallback coords if recorded playback isn't available
         self.log_out_btn_coors = (1716, 851)
         self.log_out_ok_btn_coors = (1875, 809)
@@ -1221,11 +1221,13 @@ class Controller(ControllerSecondary):
                     next_pos = 0
                     next_index = custom_order[0]
                 else:
-                    # Treat account_cycle_index as position in the custom order list.
+                    # Treat account_cycle_index as the LAST used position.
+                    # Next account should be the current position (if valid),
+                    # or the first in the list if unset.
                     pos = self._account_cycle_index
                     if pos < 0 or pos >= order_len:
                         pos = 0
-                    next_pos = (pos + 1) % order_len
+                    next_pos = pos
                     next_index = custom_order[next_pos]
                 bot_logger.log_info(f"Account play order (indices): {custom_order}")
                 bot_logger.log_info(f"Account play order pos: {self._account_cycle_index} -> {next_pos}")
@@ -1244,7 +1246,8 @@ class Controller(ControllerSecondary):
 
             bot_logger.log_info(f"Switching account to Acc_{next_index + 1}")
             if custom_order:
-                bot_logger.log_info(f"Account cycle index (order pos): {self._account_cycle_index} -> {next_pos}")
+                next_cycle = (next_pos + 1) % len(custom_order)
+                bot_logger.log_info(f"Account cycle index (order pos): {self._account_cycle_index} -> {next_cycle}")
             else:
                 bot_logger.log_info(f"Account cycle index: {self._account_cycle_index} -> {next_index}")
             self._post_login_action_done = False
@@ -1293,8 +1296,8 @@ class Controller(ControllerSecondary):
             bot_logger.log_info("Account switch: login submitted.")
 
             if not self._stop_requested:
-                bot_logger.log_info("Account switch: waiting 40s before post-login record.")
-                for _ in range(400):
+                bot_logger.log_info("Account switch: waiting 20s before post-login record.")
+                for _ in range(200):
                     if self._stop_requested:
                         break
                     time.sleep(0.1)
@@ -1317,7 +1320,8 @@ class Controller(ControllerSecondary):
                     queued_after_login = True
 
             if custom_order:
-                self._account_cycle_index = next_pos
+                # Advance to next position after a successful switch.
+                self._account_cycle_index = (next_pos + 1) % len(custom_order)
             else:
                 self._account_cycle_index = next_index
             self._last_account_switch_ts = time.time()

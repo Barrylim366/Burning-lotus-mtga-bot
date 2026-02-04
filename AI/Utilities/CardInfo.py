@@ -282,12 +282,14 @@ def get_mana_color_from_ability(ability_grp_id: int):
     return MANA_ABILITY_MAP.get(ability_grp_id)
 
 try:
-    with open(CARD_DATA_PATH, 'r', encoding='utf-8') as f:
+    with open(CARD_DATA_PATH, "r", encoding="utf-8") as f:
         _card_data = json.load(f)
 except FileNotFoundError:
-    print(f"Error: {CARD_DATA_PATH} not found. Please ensure the cards.json file is in the root directory.")
+    # Allow first-run without noisy stderr; Game.start refresh will populate cards.json.
+    _card_data = []
 except json.JSONDecodeError:
-    print(f"Error: Could not decode JSON from {CARD_DATA_PATH}. Please check file integrity.")
+    # Corrupt file; fall back to empty and refresh later.
+    _card_data = []
 
 
 def reload_cards_from_disk() -> None:
