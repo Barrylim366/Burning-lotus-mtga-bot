@@ -96,12 +96,13 @@ SelectN pauses and clears are logged in `bot.log` to trace when decisions resume
 SelectN submission is always attempted with a forced click, with retries logged if needed.
 SelectN prompts pause decisions for a short window after submit, and retries are rate-limited to avoid duplicate submits while discards resolve.
 If the local seat ID is temporarily unknown, stack resolution can still proceed when a Pass action is available.
-SelectN submissions are only clicked when a selection is active, and the bot will retry submit if the selected card(s) remain in hand. It also retries the submit click a few times if the prompt doesn't advance, and will fall back to a higher scan band above the hand if the card isn't selected on the first pass.
+SelectN submissions are only clicked when a selection is active, and the bot will retry submit if the selected card(s) remain in hand. It also retries the submit click a few times if the prompt doesn't advance. Hand-selection fallback scans above the hand are enabled only for discard prompts.
 Resolution-based SelectN prompts use a double-click on the first attempt and allow retries even when `pendingMessageCount > 0`.
 If the selected card remains in hand, resolution SelectN will re-select and re-submit a few times before giving up.
 If `Buttons/submit_btn.png` exists, Submit clicks use image matching before falling back to the calibrated coordinate.
 Resolution SelectN waits for the stack to clear before starting selection.
 Discard (SelectN) prompts allow a single delayed retry when hand zone data is missing and avoid aggressive reselect loops.
+SelectN resolution waits for the stack to clear, but has a timeout to avoid indefinite stalls and clears on match end/reset. Stack-item scanning is disabled; SelectN now only selects from hand IDs.
 
 ## Card Data Updates
 
