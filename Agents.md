@@ -1,14 +1,18 @@
 # AGENTS.md
 
-## Zugriffsbeschraenkungen
+## Access Restrictions
 
-Der Codex-Agent darf folgende Dateien **nicht oeffnen, lesen oder analysieren**:
+The Codex agent must **not open, read, or analyze** the following files:
 
 - credentials.txt
 
-Diese Datei enthaelt sensible Informationen und ist vom Zugriff explizit ausgeschlossen.
+This file contains sensitive information and is explicitly excluded from access.
 
-## Dokumentation
+## Documentation
 
-Nach jeder Aenderung am Code oder der UI muss die README.md aktualisiert werden,
-damit sie den aktuellen Stand widerspiegelt.
+After every change to code or UI, the README.md must be updated to reflect the current state.
+
+## Logs
+
+When the user asks to compare `bot.log` and `Player.log`, the default location for `Player.log` is:
+`C:/Users/giaco/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`

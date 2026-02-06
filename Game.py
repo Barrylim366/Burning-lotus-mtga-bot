@@ -3,6 +3,7 @@ from AI.AIInterface import AIKernel
 from Controller.Utilities.GameState import GameState
 import AI.Utilities.CardInfo as CardInfo
 from datetime import datetime
+import time
 import os
 import traceback
 import threading
@@ -21,6 +22,7 @@ class Game:
         self.starting_hand_logged = False
         self._stop_requested = False
         self._timers: list[threading.Timer] = []
+        self._last_action_delay_turn = -1
 
         # Clear log files on start
         with open(self.human_log_file, 'w') as f:
@@ -77,6 +79,7 @@ class Game:
         self.last_logged_turn = -1
         self.game_started = False
         self.starting_hand_logged = False
+        self._last_action_delay_turn = -1
 
         # Reset AI state
         if hasattr(self.ai, 'reset'):
@@ -233,6 +236,11 @@ class Game:
 
             self._debug(f"Turn info: turn={turn_num}, active={active_player}, phase={phase}, step={step}")
             self._debug(f"Decision player={decision_player}, priority={priority_player}")
+
+            if active_player == decision_player and turn_num != self._last_action_delay_turn:
+                self._debug("Active turn delay: waiting 2 seconds before actions")
+                time.sleep(2.0)
+                self._last_action_delay_turn = turn_num
 
             # Log new turn in human log (only once per turn, only for MY turns)
             if turn_num != self.last_logged_turn and active_player == 1:
