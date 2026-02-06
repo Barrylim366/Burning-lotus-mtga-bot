@@ -173,6 +173,7 @@ class Controller(ControllerSecondary):
         self.__pending_target_select = None
         self.__last_submit_targets_ts = 0.0
         self.__pending_select_n = None
+        self.__select_n_in_progress = False
         self.__last_submit_selection_ts = 0.0
         self.__target_submit_cooldown_sec = 1.0
         self.__pending_pay_costs_ts = 0.0
@@ -573,7 +574,11 @@ class Controller(ControllerSecondary):
 
             # Move above start point first to reset any hover states
             reset_pos = (self.hand_scan_p1[0], self.hand_scan_p1[1] - 100)
-            bot_logger.log_move(reset_pos[0], reset_pos[1], f"RESET_BEFORE_SCAN (target card_id={card_id})")
+            bot_logger.log_move(
+                reset_pos[0],
+                reset_pos[1],
+                f"RESET_BEFORE_SCAN (target card_id={card_id})",
+            )
             self.input.move_abs(reset_pos[0], reset_pos[1])
             time.sleep(0.5)
 
@@ -647,7 +652,7 @@ class Controller(ControllerSecondary):
                 self.input.left_click(1)
                 time.sleep(0.7)
 
-            # Reset position
+            # Final reset position
             reset_pos = (self.hand_scan_p1[0], self.hand_scan_p1[1] - 100)
             bot_logger.log_move(reset_pos[0], reset_pos[1], "RESET_AFTER_CAST")
             self.input.move_abs(reset_pos[0], reset_pos[1])
@@ -680,7 +685,7 @@ class Controller(ControllerSecondary):
         bot_logger.log_info(f"Activating ability: card_id={card_id}, ability_id={ability_id}")
         # Most optional triggers are confirmed via the bottom-right prompt button.
         time.sleep(0.2)
-        self.submit_selection()
+        self.submit_selection(reason="activate_ability", force=True)
     
     def select_hand_card(self, card_id: int, clicks: int = 1) -> bool:
         """Select a card in hand by hovering until objectId matches, then click."""
@@ -758,6 +763,27 @@ class Controller(ControllerSecondary):
         finally:
             bot_logger.set_hover_logging(False)
 
+    def select_hand_card_offset(self, card_id: int, clicks: int = 1, y_offset: int = -120) -> bool:
+        """Select a hand card using a vertical offset scan (useful for SelectN prompts)."""
+        bot_logger.set_hover_logging(True)
+        try:
+            p1 = (self.hand_scan_p1[0], self.hand_scan_p1[1] + y_offset)
+            p2 = (self.hand_scan_p2[0], self.hand_scan_p2[1] + y_offset)
+            min_y = self.screen_bounds[0][1]
+            max_y = self.screen_bounds[1][1]
+            p1 = (p1[0], max(min_y, min(max_y, p1[1])))
+            p2 = (p2[0], max(min_y, min(max_y, p2[1])))
+            return self.__select_object_in_region(
+                card_id=card_id,
+                p1=p1,
+                p2=p2,
+                step=self.cast_card_dist,
+                clicks=clicks,
+                label="HAND_SELECT_FALLBACK",
+            )
+        finally:
+            bot_logger.set_hover_logging(False)
+
     def select_stack_item(self, card_id: int, clicks: int = 1) -> bool:
         """Select a stack/prompt item by scanning a grid for matching hover objectId."""
         bot_logger.set_hover_logging(True)
@@ -783,12 +809,38 @@ class Controller(ControllerSecondary):
         finally:
             bot_logger.set_hover_logging(False)
 
-    def submit_selection(self) -> None:
+    def __selection_submit_allowed(self) -> bool:
+        if self._suppress_selections or self._stop_requested:
+            return False
+        if self.__pending_select_n:
+            ts = self.__pending_select_n.get("ts", 0.0)
+            ids = set(self.__pending_select_n.get("ids", []) or [])
+            pending_zone = self.updated_game_state.get_zone("ZoneType_Pending")
+            pending_ids = set(pending_zone.get("objectInstanceIds", []) or []) if pending_zone else set()
+            if pending_ids and ids.intersection(pending_ids):
+                return True
+            # Keep a short grace window for submit after selection.
+            if time.time() - ts < 4.0:
+                return True
+        if self.__pending_target_select is not None and self.__pending_target_ready_to_submit():
+            return True
+        return False
+
+    def submit_selection(self, *, reason: str = "unknown", force: bool = False) -> bool:
+        if not force and not self.__selection_submit_allowed():
+            bot_logger.log_info(f"SubmitSelection skipped (not active). reason={reason}")
+            return False
+        submit_img = os.path.join(self._buttons_dir(), "submit_btn.png")
+        if os.path.exists(submit_img):
+            if self._click_image(submit_img, "SUBMIT_SELECTION_IMG", confidence=0.82, timeout=1.5):
+                self.__last_submit_selection_ts = time.time()
+                return True
         bot_logger.log_click(self.main_br_button_coordinates[0], self.main_br_button_coordinates[1], "SUBMIT_SELECTION")
         self.input.move_abs(self.main_br_button_coordinates[0], self.main_br_button_coordinates[1])
         time.sleep(0.1)
         self.input.left_click(1)
         self.__last_submit_selection_ts = time.time()
+        return True
 
     def resolve(self) -> None:
         turn_info = self.updated_game_state.get_turn_info() or {}
@@ -958,6 +1010,8 @@ class Controller(ControllerSecondary):
         self._suppress_selections = False
         self.updated_game_state = GameState()
         self.__inst_id_grp_id_dict = {}
+        self.__pending_select_n = None
+        self.__select_n_in_progress = False
         # Cancel any pending decision timers
         if self.__decision_execution_thread is not None:
             self.__decision_execution_thread.cancel()
@@ -1078,6 +1132,7 @@ class Controller(ControllerSecondary):
             bot_logger.log_info("Detected match completed event")
             self._suppress_selections = True
             self.__pending_select_n = None
+            self.__select_n_in_progress = False
             self.__pending_target_select = None
             remaining = self.get_account_switch_remaining_sec()
             if self._account_switch_interval > 0:
@@ -1534,6 +1589,11 @@ class Controller(ControllerSecondary):
             if self._suppress_selections or self._stop_requested:
                 bot_logger.log_info("SelectN ignored: selections suppressed or stop requested.")
                 return
+            stack_count = 0
+            try:
+                stack_count = self.updated_game_state.get_zone_object_count("ZoneType_Stack")
+            except Exception:
+                stack_count = 0
             start = line.find("{")
             if start == -1:
                 return
@@ -1558,6 +1618,33 @@ class Controller(ControllerSecondary):
                 random.shuffle(ids)
                 context = req.get("context")
                 option_context = req.get("optionContext")
+                discard_context = False
+                try:
+                    context_candidates = [
+                        context,
+                        option_context,
+                        req.get("selectionType"),
+                        req.get("selectionContext"),
+                        req.get("promptType"),
+                    ]
+                    discard_context = any(
+                        isinstance(val, str) and "discard" in val.lower()
+                        for val in context_candidates
+                    )
+                except Exception:
+                    discard_context = False
+                if discard_context:
+                    bot_logger.log_info("SelectN context: discard detected.")
+                resolution_context = (
+                    context == "SelectionContext_Resolution"
+                    or option_context == "OptionContext_Resolution"
+                )
+                if resolution_context and stack_count > 0:
+                    bot_logger.log_info(
+                        f"SelectN delayed: stack has {stack_count} object(s) during resolution."
+                    )
+                    threading.Timer(0.6, lambda: self.__handle_select_n_req(line)).start()
+                    return
                 use_stack_selection = (
                     context == "SelectionContext_TriggeredAbility"
                     or option_context == "OptionContext_Stacking"
@@ -1572,10 +1659,45 @@ class Controller(ControllerSecondary):
                     bot_logger.log_info(
                         f"SelectN ids not in hand; attempting selection from prompt list. ids={ids}"
                     )
+                    if discard_context:
+                        retry = 0
+                        if self.__pending_select_n is not None:
+                            retry = int(self.__pending_select_n.get("discard_retry", 0))
+                        if retry < 1:
+                            if self.__pending_select_n is not None:
+                                self.__pending_select_n["discard_retry"] = retry + 1
+                            bot_logger.log_info(
+                                "SelectN discard: hand zone missing, retrying once after delay."
+                            )
+                            threading.Timer(1.0, lambda: self.__handle_select_n_req(line)).start()
+                            return
                     if use_stack_selection:
                         bot_logger.log_info("SelectN using stack scan for triggered ability selection")
                 else:
                     ids = ids_in_hand
+                stack_select_candidates: list[dict] = []
+                if not use_hand_selection:
+                    objects = self.updated_game_state.get_game_objects() or []
+                    obj_by_id = {obj.get("instanceId"): obj for obj in objects if isinstance(obj, dict)}
+                    for cid in ids:
+                        hover_id = cid
+                        obj = obj_by_id.get(cid)
+                        if obj and obj.get("type") == "GameObjectType_Ability":
+                            parent_id = obj.get("parentId")
+                            if isinstance(parent_id, int):
+                                hover_id = parent_id
+                        if hover_id != cid:
+                            bot_logger.log_info(
+                                f"SelectN stack mapping: ability_id={cid} -> hover_id={hover_id}"
+                            )
+                        stack_select_candidates.append({"id": cid, "hover_id": hover_id})
+
+                def _clear_pending_select_n(reason: str | None = None) -> None:
+                    if reason:
+                        bot_logger.log_info(reason)
+                    self.__pending_select_n = None
+                    self.__select_n_in_progress = False
+                    bot_logger.log_info("SelectN cleared: decisions may resume.")
 
                 def _verify_selection(selected_ids: list[int], attempt: int) -> None:
                     try:
@@ -1587,77 +1709,171 @@ class Controller(ControllerSecondary):
                         hand_ids = set(hand_zone.get("objectInstanceIds", []) or [])
                         still_in_hand = [cid for cid in selected_ids if cid in hand_ids]
                         if not still_in_hand:
-                            self.__pending_select_n = None
+                            _clear_pending_select_n()
+                            return
+                        if discard_context:
+                            # Avoid aggressive reselect loops on discard prompts.
+                            if time.time() - self.__last_submit_selection_ts > 2.5 and attempt < 2:
+                                self.submit_selection(
+                                    reason="select_n_discard_verify_retry",
+                                    force=True,
+                                )
+                                if self.__pending_select_n is not None:
+                                    self.__pending_select_n["ts"] = time.time()
+                                threading.Timer(1.2, _verify_selection, args=(selected_ids, attempt + 1)).start()
                             return
                         pending_count = self.updated_game_state.get_pending_message_count()
                         pending_zone = self.updated_game_state.get_zone("ZoneType_Pending")
                         pending_ids = set(pending_zone.get("objectInstanceIds", []) or []) if pending_zone else set()
-                        if pending_count > 0 or pending_ids.intersection(still_in_hand):
+                        if pending_ids.intersection(still_in_hand):
+                            return
+                        if pending_count > 0 and not resolution_context:
                             return
                         if time.time() - self.__last_submit_selection_ts < 2.5:
                             return
-                        if attempt < 2:
-                            bot_logger.log_info(
-                                f"SelectN verify: ids still in hand {still_in_hand}, retrying (attempt {attempt + 1})"
-                            )
-                            _attempt_selection(attempt + 1, delay=0.8)
+                        max_attempts = 3 if resolution_context else 2
+                        if attempt < max_attempts:
+                            if self.submit_selection(
+                                reason="select_n_verify_retry",
+                                force=resolution_context,
+                            ):
+                                if self.__pending_select_n is not None:
+                                    self.__pending_select_n["ts"] = time.time()
+                                threading.Timer(1.2, _verify_selection, args=(selected_ids, attempt + 1)).start()
+                                return
+                            if attempt < max_attempts:
+                                bot_logger.log_info(
+                                    f"SelectN verify: ids still in hand {still_in_hand}, retrying (attempt {attempt + 1})"
+                                )
+                                _attempt_selection(attempt + 1, delay=0.8)
                     except Exception as e:
                         bot_logger.log_error(f"SelectN verify failed: {e}")
 
                 def _attempt_selection(attempt: int, delay: float) -> None:
                     def _do_selection():
-                        if self._suppress_selections or self._stop_requested:
-                            self.__pending_select_n = None
-                            return
                         try:
-                            turn_info = self.updated_game_state.get_turn_info() or {}
-                            decision_player = turn_info.get("decisionPlayer")
-                        except Exception:
-                            decision_player = None
-                        pending_count = self.updated_game_state.get_pending_message_count()
-                        if (
-                            self.__system_seat_id is not None
-                            and decision_player is not None
-                            and decision_player != self.__system_seat_id
-                        ) or pending_count > 0:
-                            if attempt < 3:
+                            if self._suppress_selections or self._stop_requested:
+                                _clear_pending_select_n()
+                                return
+                            self.__select_n_in_progress = True
+                            if attempt == 1:
+                                wait_sec = 3.0
+                                if discard_context:
+                                    wait_sec = 3.5
                                 bot_logger.log_info(
-                                    "SelectN delayed: decisionPlayer={}, pendingMessages={}, retrying (attempt {}).".format(
-                                        decision_player, pending_count, attempt + 1
-                                    )
+                                    f"SelectN delay: waiting {wait_sec:.1f} seconds before selection."
                                 )
-                                _attempt_selection(attempt + 1, delay=0.8)
-                            else:
-                                bot_logger.log_info(
-                                    "SelectN aborted: decisionPlayer={}, pendingMessages={}.".format(
-                                        decision_player, pending_count
+                                time.sleep(wait_sec)
+                            try:
+                                turn_info = self.updated_game_state.get_turn_info() or {}
+                                decision_player = turn_info.get("decisionPlayer")
+                            except Exception:
+                                decision_player = None
+                            pending_count = self.updated_game_state.get_pending_message_count()
+                            stack_count_local = 0
+                            try:
+                                stack_count_local = self.updated_game_state.get_zone_object_count("ZoneType_Stack")
+                            except Exception:
+                                stack_count_local = 0
+                            if (
+                                self.__system_seat_id is not None
+                                and decision_player is not None
+                                and decision_player != self.__system_seat_id
+                            ) or pending_count > 0 or (resolution_context and stack_count_local > 0):
+                                if attempt < 3:
+                                    bot_logger.log_info(
+                                        "SelectN delayed: decisionPlayer={}, pendingMessages={}, retrying (attempt {}).".format(
+                                            decision_player, pending_count, attempt + 1
+                                        )
                                     )
-                                )
-                                self.__pending_select_n = None
-                            return
-                        selected = 0
-                        selected_ids: list[int] = []
-                        clicks = 1 if attempt == 1 else 2
-                        for card_id in ids:
-                            if selected >= min_sel:
-                                break
-                            if use_hand_selection:
-                                selected_ok = self.select_hand_card(card_id, clicks=clicks)
-                            else:
-                                selected_ok = self.select_stack_item(card_id, clicks=clicks)
-                            if selected_ok:
-                                selected += 1
-                                selected_ids.append(card_id)
-                                time.sleep(0.3)
-                        if not selected_ids:
-                            bot_logger.log_error("SelectN failed to select any cards")
-                            self.__pending_select_n = None
-                            return
-                        time.sleep(0.4)
-                        self.submit_selection()
-                        if self.__pending_select_n is not None:
-                            self.__pending_select_n["ts"] = time.time()
-                        threading.Timer(1.2, _verify_selection, args=(selected_ids, attempt)).start()
+                                    _attempt_selection(attempt + 1, delay=0.8)
+                                else:
+                                    bot_logger.log_info(
+                                        "SelectN aborted: decisionPlayer={}, pendingMessages={}.".format(
+                                            decision_player, pending_count
+                                        )
+                                    )
+                                    _clear_pending_select_n()
+                                return
+                            selected = 0
+                            selected_ids: list[int] = []
+                            used_hover_ids: set[int] = set()
+                            base_clicks = 2 if resolution_context else 1
+                            clicks = base_clicks if attempt == 1 else 2
+                            candidate_ids = ids
+                            if not use_hand_selection:
+                                candidate_ids = stack_select_candidates
+                            for card_id in candidate_ids:
+                                if selected >= min_sel:
+                                    break
+                                if use_hand_selection:
+                                    selected_ok = self.select_hand_card(card_id, clicks=clicks)
+                                    if not selected_ok:
+                                        for y_offset in (-120, -200):
+                                            selected_ok = self.select_hand_card_offset(
+                                                card_id, clicks=clicks, y_offset=y_offset
+                                            )
+                                            if selected_ok:
+                                                break
+                                else:
+                                    orig_id = card_id["id"]
+                                    hover_id = card_id["hover_id"]
+                                    if hover_id in used_hover_ids:
+                                        continue
+                                    selected_ok = self.select_stack_item(hover_id, clicks=clicks)
+                                    if selected_ok:
+                                        used_hover_ids.add(hover_id)
+                                if selected_ok:
+                                    selected += 1
+                                    selected_ids.append(card_id if use_hand_selection else orig_id)
+                                    time.sleep(0.3)
+                            if not selected_ids:
+                                if use_hand_selection:
+                                    bot_logger.log_error("SelectN failed to select any cards")
+                                else:
+                                    bot_logger.log_error(
+                                        f"SelectN failed to select any stack items (ids={ids})"
+                                    )
+                                _clear_pending_select_n()
+                                return
+                            time.sleep(0.8)
+                            bot_logger.log_info("SelectN submitting selection.")
+                            self.submit_selection(reason="select_n_initial_submit", force=True)
+                            if self.__pending_select_n is not None:
+                                self.__pending_select_n["ts"] = time.time()
+                            # If the submit click doesn't register, retry submit without reselecting.
+                            def _retry_submit_only(retry_idx: int) -> None:
+                                if discard_context and retry_idx > 1:
+                                    return
+                                if retry_idx > 2:
+                                    return
+                                if self.__pending_select_n is None:
+                                    return
+                                try:
+                                    turn_info = self.updated_game_state.get_turn_info() or {}
+                                    decision_player = turn_info.get("decisionPlayer")
+                                except Exception:
+                                    decision_player = None
+                                pending_count = self.updated_game_state.get_pending_message_count()
+                                if (
+                                    self.__system_seat_id is not None
+                                    and decision_player is not None
+                                    and decision_player != self.__system_seat_id
+                                ) or pending_count > 0:
+                                    return
+                                if self.submit_selection(
+                                    reason=f"select_n_retry_submit_{retry_idx}",
+                                    force=True,
+                                ):
+                                    if self.__pending_select_n is not None:
+                                        self.__pending_select_n["ts"] = time.time()
+                                threading.Timer(1.2, _retry_submit_only, args=(retry_idx + 1,)).start()
+
+                            threading.Timer(1.2, _retry_submit_only, args=(1,)).start()
+                            threading.Timer(1.2, _verify_selection, args=(selected_ids, attempt)).start()
+                        except Exception as e:
+                            bot_logger.log_error(f"SelectN selection failed: {e}")
+                            _clear_pending_select_n("SelectN failed: clearing pending selection.")
 
                     threading.Timer(delay, _do_selection).start()
 
@@ -1844,7 +2060,11 @@ class Controller(ControllerSecondary):
     def __should_pause_for_select_n(self) -> bool:
         if self._suppress_selections:
             self.__pending_select_n = None
+            self.__select_n_in_progress = False
             return False
+        if self.__select_n_in_progress:
+            bot_logger.log_info("SelectN in progress: pausing other decisions.")
+            return True
         if not self.__pending_select_n:
             return False
         ts = self.__pending_select_n.get("ts", 0.0)
@@ -1856,6 +2076,8 @@ class Controller(ControllerSecondary):
         if time.time() - ts < 3.0:
             return True
         self.__pending_select_n = None
+        self.__select_n_in_progress = False
+        bot_logger.log_info("SelectN auto-clear: pending window elapsed.")
         return False
 
     def __should_pause_for_targets(self) -> bool:

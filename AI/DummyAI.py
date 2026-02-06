@@ -338,7 +338,7 @@ class DummyAI(AIKernel):
             if idx >= len(actions):
                 return
 
-            cmc, _instance_id, _card_name, _mana_cost_str, action_mana_cost, _uses_convoke = actions[idx]
+            cmc, _instance_id, _card_name, _mana_cost_str, action_mana_cost, _uses_convoke, _type_priority = actions[idx]
             _dfs(
                 idx + 1,
                 spent + cmc,
@@ -358,7 +358,7 @@ class DummyAI(AIKernel):
         if plan_count == 1:
             chosen_index = plan_indices[0]
         else:
-            chosen_index = max(plan_indices, key=lambda i: actions[i][0])
+            chosen_index = max(plan_indices, key=lambda i: (actions[i][0], actions[i][6]))
 
         chosen = actions[chosen_index]
         score = (best_spent, -plan_count, plan_max)
@@ -387,6 +387,20 @@ class DummyAI(AIKernel):
                 self._debug(f"New turn {new_turn_num} - resetting land played flag")
         except Exception as e:
             self._debug(f"ERROR in __new_turn_check: {e}\n{traceback.format_exc()}")
+
+    @staticmethod
+    def _card_type_priority(card_types: list[str] | None) -> int:
+        if not card_types:
+            return 0
+        if 'Creature' in card_types:
+            return 5
+        if 'Instant' in card_types:
+            return 4
+        if 'Sorcery' in card_types:
+            return 3
+        if 'Enchantment' in card_types:
+            return 2
+        return 1
 
     def generate_move(self, game_state: GameState, inst_id_grp_id_dict):
         move = {'resolve': []}
@@ -532,8 +546,9 @@ class DummyAI(AIKernel):
 
                         # Check if we can pay the mana cost (color + total)
                         if self._can_cast_with_mana_costs(action_mana_cost, eff_colors, eff_total_mana, eff_sources):
+                            type_priority = self._card_type_priority(card_types)
                             cast_actions.append(
-                                (cmc, instance_id, card_name, mana_cost_str, action_mana_cost, uses_convoke)
+                                (cmc, instance_id, card_name, mana_cost_str, action_mana_cost, uses_convoke, type_priority)
                             )
                             self._debug(
                                 f"Can cast: {card_name} (cost={mana_cost_str}, cmc={cmc}, convoke={uses_convoke})"
@@ -561,14 +576,14 @@ class DummyAI(AIKernel):
                                 non_convoke_actions, available_colors, total_mana, sources
                             )
                         if convoke_actions:
-                            convoke_best = max(convoke_actions, key=lambda a: a[0])
+                            convoke_best = max(convoke_actions, key=lambda a: (a[0], a[6]))
                             convoke_score = (convoke_best[0], -1, convoke_best[0])
                             if chosen_score is None or convoke_score > chosen_score:
                                 chosen = convoke_best
                                 chosen_score = convoke_score
 
                         if chosen:
-                            cmc, instance_id, card_name, mana_cost, _action_mana_cost, _uses_convoke = chosen
+                            cmc, instance_id, card_name, mana_cost, _action_mana_cost, _uses_convoke, _type_priority = chosen
                             self._debug(f"CASTING: {card_name} (instanceId={instance_id}, cost={mana_cost})")
                             if sorcery_found:
                                 self._debug(

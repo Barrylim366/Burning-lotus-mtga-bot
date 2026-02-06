@@ -27,6 +27,7 @@ pip install pyautogui opencv-python pillow pynput
 python ui.py
 ```
 
+
 2) Calibrate buttons via **Calibrate**:
    - Required: keep_hand, queue_button, next, concede, attack_all, opponent_avatar, hand_scan_p1, hand_scan_p2, assign_damage_done
    - Logout flow uses: log_out_btn, log_out_ok_btn
@@ -35,10 +36,12 @@ python ui.py
    - **Switch Account** opens a window for **Switch account (min)** and **Account Play Order** (use **Save Order**).
      Saving shows a short confirmation.
    - **Record Action** opens a window for **Record** (uses F8 to stop) and **Show Records**.
+     Saved records include per-action timestamps (`ts`) in `recorded_actions_records.json`.
 
 4) Start Bot.
 
 Stop bot any time with **Mouse Wheel Down**.
+
 
 ## Account Switching
 
@@ -47,6 +50,7 @@ Stop bot any time with **Mouse Wheel Down**.
 - Logout/login uses recorded action sequence + credentials injection.
 - If the client is in the Store scene during fallback logout, the bot logs the last scene and presses ESC twice to reach the options menu.
 - SelectN stack/trigger selections are delayed while `pendingMessageCount > 0` or the bot is not the decision player to avoid hover spam.
+- SelectN stack/trigger selections map ability instance IDs to their parent card IDs for hover-based selection when needed.
 - Login wait before typing credentials: 5 seconds.
 - Post-login wait before running the recorded action: 20 seconds.
 - Order follows **Account Play Order** in Settings; the first entry is used as the next switch target.
@@ -74,6 +78,7 @@ In main phases the bot tries to use as much available mana as possible across al
 - It chooses casts that maximize total CMC spent this turn.
 - If multiple options spend the same total, it prefers a single higher-cost spell
   over multiple cheaper spells.
+- If CMC is tied, it prefers: creature -> instant -> sorcery -> enchantment -> other.
 - Multi-spell plans are validated against color requirements, not just CMC.
  - Convoke is supported using untapped creatures as colored mana sources.
 
@@ -84,8 +89,19 @@ mid-resolution or while the UI is still busy.
 It also auto-confirms mana payment prompts when MTGA requests pay costs.
 In main phases, decisions are also deferred while the stack contains objects.
 If the bot is the decision player, `pendingMessageCount` is zero, and a `Pass` action is available, it will still resolve priority even with stack objects present.
+On its own turn, the bot waits 2 seconds once per turn before starting actions like hovering, casting, or clicking.
+SelectN prompts wait 3 seconds before the bot starts selecting cards.
+While a SelectN selection is in progress, other decisions are paused to avoid extra clicks.
+SelectN pauses and clears are logged in `bot.log` to trace when decisions resume.
+SelectN submission is always attempted with a forced click, with retries logged if needed.
 SelectN prompts pause decisions for a short window after submit, and retries are rate-limited to avoid duplicate submits while discards resolve.
 If the local seat ID is temporarily unknown, stack resolution can still proceed when a Pass action is available.
+SelectN submissions are only clicked when a selection is active, and the bot will retry submit if the selected card(s) remain in hand. It also retries the submit click a few times if the prompt doesn't advance, and will fall back to a higher scan band above the hand if the card isn't selected on the first pass.
+Resolution-based SelectN prompts use a double-click on the first attempt and allow retries even when `pendingMessageCount > 0`.
+If the selected card remains in hand, resolution SelectN will re-select and re-submit a few times before giving up.
+If `Buttons/submit_btn.png` exists, Submit clicks use image matching before falling back to the calibrated coordinate.
+Resolution SelectN waits for the stack to clear before starting selection.
+Discard (SelectN) prompts allow a single delayed retry when hand zone data is missing and avoid aggressive reselect loops.
 
 ## Card Data Updates
 
@@ -102,5 +118,6 @@ Fallback:
 - `bot.log` – main bot debug
 - `human.log` – high-level actions
 - `bot_gui_subprocess.log` – UI subprocess log (if used)
+- `Player.log` default path: `C:/Users/giaco/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`
 - Hover logs are suppressed by default and only enabled during selection scans.
 - A one-line match summary is logged at match completion.

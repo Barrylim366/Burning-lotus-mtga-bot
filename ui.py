@@ -1272,7 +1272,7 @@ class SettingsWindow(tk.Toplevel):
         prev_ts = events[0]["ts"]
         for ev in events:
             delay = (ev["ts"] - prev_ts).total_seconds()
-            item = {"type": ev["type"], "delay": delay}
+            item = {"type": ev["type"], "delay": delay, "ts": ev["ts"].isoformat()}
             if ev["type"] == "click":
                 item["x"] = ev.get("x", 0)
                 item["y"] = ev.get("y", 0)
