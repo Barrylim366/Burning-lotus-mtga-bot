@@ -16,3 +16,7 @@ After every change to code or UI, the README.md must be updated to reflect the c
 
 When the user asks to compare `bot.log` and `Player.log`, the default location for `Player.log` is:
 `C:/Users/giaco/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`
+
+## User Corrections
+
+If the user states something factually incorrect, the agent should correct it clearly and directly, with brief reasoning when needed.

@@ -39,11 +39,17 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Outer dark card rim/shadow was removed for a cleaner edge (card surround now matches surface color)
 - Stop button uses a subtle red background treatment
 - Button focus outline is neutralized (no red focus ring on the last clicked button)
+- All submenu/pop-up windows now inherit the same bluish-dark UI palette via centralized submenu theming
+- Settings window size now matches main window width (`460`) and is about 1 cm taller than before (`340` height)
+- During bot startup, the UI shows an indeterminate loading bar with the label `Loading Carddata` until initialization finishes
+- Fixed a startup regression in `ui.py` caused by a mismatched theme token in the loading bar style
+- `Status: Stopped` now uses a subtle red text tone
 
 Standalone runnable UI example (single file): `red_lotus_ui_example.py`.
 
 
 2) Calibrate buttons via **Calibrate**:
+   - Calibration uses `pynput` (the optional `Capture (slurp)` button was removed).
    - Required: keep_hand, queue_button, next, concede, attack_all, opponent_avatar, hand_scan_p1, hand_scan_p2, assign_damage_done
    - Logout flow uses: log_out_btn, log_out_ok_btn
 
