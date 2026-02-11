@@ -6,9 +6,6 @@ import os
 import time
 from PIL import Image, ImageOps, ImageTk
 import json
-import re
-import shutil
-import subprocess
 import threading
 from Controller.Utilities.input_controller import InputControllerError, create_input_controller
 
@@ -17,6 +14,166 @@ from Controller.MTGAController.Controller import Controller
 from AI.DummyAI import DummyAI
 from Game import Game
 
+
+def _submenu_palette():
+    return {
+        "bg": "#0F1115",
+        "surface": "#151A21",
+        "surface_alt": "#1B2230",
+        "surface_hover": "#253041",
+        "border": "#242B36",
+        "text": "#E7EAF0",
+        "text_muted": "#9AA3B2",
+        "success": "#8FE0B0",
+        "danger_bg": "#3A2025",
+        "danger_hover": "#4A262C",
+    }
+
+
+def _apply_dark_combobox_style(window):
+    c = _submenu_palette()
+    style = ttk.Style(window)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    style.configure(
+        "Dark.TCombobox",
+        fieldbackground=c["surface_alt"],
+        background=c["surface_alt"],
+        foreground=c["text"],
+        bordercolor=c["border"],
+        lightcolor=c["border"],
+        darkcolor=c["border"],
+        arrowcolor=c["text"],
+    )
+    style.map(
+        "Dark.TCombobox",
+        fieldbackground=[("readonly", c["surface_alt"])],
+        background=[("readonly", c["surface_alt"])],
+        foreground=[("readonly", c["text"])],
+    )
+
+
+def _apply_submenu_theme(window):
+    c = _submenu_palette()
+    _apply_dark_combobox_style(window)
+    try:
+        window.configure(bg=c["bg"])
+    except Exception:
+        pass
+
+    bg_map = {
+        "#2b2b2b": c["surface"],
+        "#3b3b3b": c["surface_alt"],
+        "#3a3a3a": c["surface_alt"],
+        "#444444": c["surface_hover"],
+        "#4a4a4a": c["border"],
+        "#1e1e1e": c["bg"],
+        "#111111": c["bg"],
+    }
+    fg_map = {
+        "white": c["text"],
+        "#ffffff": c["text"],
+        "#aaaaaa": c["text_muted"],
+        "#dddddd": c["text"],
+        "#00ff00": c["success"],
+        "#1e1e1e": c["bg"],
+    }
+
+    stack = [window]
+    while stack:
+        widget = stack.pop()
+        try:
+            stack.extend(widget.winfo_children())
+        except Exception:
+            pass
+
+        if isinstance(widget, ttk.Combobox):
+            try:
+                widget.configure(style="Dark.TCombobox")
+            except Exception:
+                pass
+            continue
+
+        if isinstance(widget, tk.Button):
+            try:
+                label = str(widget.cget("text") or "").lower()
+                if "delete" in label or "stop" in label:
+                    widget.configure(
+                        bg=c["danger_bg"],
+                        fg=c["text"],
+                        activebackground=c["danger_hover"],
+                        activeforeground=c["text"],
+                        relief=tk.FLAT,
+                    )
+                else:
+                    widget.configure(
+                        bg=c["surface_alt"],
+                        fg=c["text"],
+                        activebackground=c["surface_hover"],
+                        activeforeground=c["text"],
+                        relief=tk.FLAT,
+                    )
+            except Exception:
+                pass
+
+        if isinstance(widget, tk.Entry):
+            try:
+                widget.configure(
+                    bg=c["surface_alt"],
+                    fg=c["text"],
+                    insertbackground=c["text"],
+                    relief=tk.FLAT,
+                )
+            except Exception:
+                pass
+
+        if isinstance(widget, tk.Text):
+            try:
+                widget.configure(
+                    bg=c["bg"],
+                    fg=c["text"],
+                    insertbackground=c["text"],
+                )
+            except Exception:
+                pass
+
+        if isinstance(widget, tk.Checkbutton):
+            try:
+                widget.configure(
+                    bg=c["surface"],
+                    fg=c["text"],
+                    activebackground=c["surface"],
+                    activeforeground=c["text"],
+                    selectcolor=c["surface"],
+                )
+            except Exception:
+                pass
+
+        for opt in ("bg", "background", "activebackground", "highlightbackground"):
+            try:
+                cur = str(widget.cget(opt)).lower()
+            except Exception:
+                continue
+            new_val = bg_map.get(cur)
+            if new_val:
+                try:
+                    widget.configure(**{opt: new_val})
+                except Exception:
+                    pass
+
+        for opt in ("fg", "foreground", "activeforeground", "insertbackground", "highlightcolor"):
+            try:
+                cur = str(widget.cget(opt)).lower()
+            except Exception:
+                continue
+            new_val = fg_map.get(cur)
+            if new_val:
+                try:
+                    widget.configure(**{opt: new_val})
+                except Exception:
+                    pass
 
 class CalibrationWindow(tk.Toplevel):
     """Calibration submenu window"""
@@ -39,6 +196,7 @@ class CalibrationWindow(tk.Toplevel):
         self.current_y = 0
 
         self._setup_ui()
+        _apply_submenu_theme(self)
         self._update_calibration_capabilities()
 
     def _setup_ui(self):
@@ -80,13 +238,6 @@ class CalibrationWindow(tk.Toplevel):
                                         activebackground="#5a5a5a", activeforeground="white",
                                         relief=tk.FLAT, padx=15, pady=5)
         self.calibrate_btn.pack(side=tk.LEFT)
-
-        # Wayland-friendly capture (slurp)
-        self.slurp_btn = tk.Button(row1, text="Capture (slurp)", command=self._capture_with_slurp,
-                                   bg="#4a4a4a", fg="white", font=("Segoe UI", 10),
-                                   activebackground="#5a5a5a", activeforeground="white",
-                                   relief=tk.FLAT, padx=15, pady=5)
-        self.slurp_btn.pack(side=tk.LEFT, padx=(10, 0))
 
         # Row 2: Coordinate display
         coord_frame = tk.Frame(main_frame, bg="#3b3b3b", padx=15, pady=15)
@@ -172,10 +323,7 @@ class CalibrationWindow(tk.Toplevel):
         self.test_btn.pack(side=tk.LEFT)
 
     def _update_calibration_capabilities(self):
-        # Under Wayland, pynput global capture is often unavailable; also it may not be installed.
-        has_slurp = shutil.which("slurp") is not None
-        self.slurp_btn.config(state=(tk.NORMAL if has_slurp else tk.DISABLED))
-
+        # Global calibration requires pynput.
         can_use_pynput = True
         try:
             import pynput  # noqa: F401
@@ -184,16 +332,10 @@ class CalibrationWindow(tk.Toplevel):
 
         if not can_use_pynput:
             self.calibrate_btn.config(state=tk.DISABLED)
-            if has_slurp:
-                self.instruction_label.config(
-                    text="Wayland: nutze 'Capture (slurp)' (kein Live-Tracking ohne pynput).",
-                    fg="#aaaaaa",
-                )
-            else:
-                self.instruction_label.config(
-                    text="Installiere 'slurp' f++r Wayland-Kalibrierung.",
-                    fg="#ff6666",
-                )
+            self.instruction_label.config(
+                text="Kalibrierung braucht 'pynput'. Bitte installieren.",
+                fg="#ff6666",
+            )
 
         # Enable test click only when the configured backend can be initialized.
         try:
@@ -226,9 +368,8 @@ class CalibrationWindow(tk.Toplevel):
             self.keyboard_listener.start()
         except Exception as e:
             self._stop_calibration()
-            # No modal error on Wayland; guide user to slurp-based capture instead.
             self.instruction_label.config(
-                text="Kalibrierung per Live-Tracking nicht verf++gbar. Nutze 'Capture (slurp)'.",
+                text="Kalibrierung per Live-Tracking nicht verf++gbar.",
                 fg="#ffcc66",
             )
 
@@ -266,28 +407,6 @@ class CalibrationWindow(tk.Toplevel):
         self.config_manager.save_coordinate(button_name, self.current_x, self.current_y)
         self._stop_calibration()
         self.instruction_label.config(text=f"Saved {button_name}: ({self.current_x}, {self.current_y})", fg="#00ff00")
-
-    def _capture_with_slurp(self):
-        if shutil.which("slurp") is None:
-            self.instruction_label.config(text="`slurp` nicht gefunden. Installiere es zuerst.", fg="#ff6666")
-            return
-
-        def _worker():
-            try:
-                # Most slurp builds support point selection with `-p`.
-                # We parse the first two integers we see to be resilient across formats.
-                out = subprocess.check_output(["slurp", "-p"], text=True).strip()
-                nums = [int(n) for n in re.findall(r"-?\\d+", out)]
-                if len(nums) < 2:
-                    raise ValueError(f"Unexpected slurp output: {out!r}")
-                x, y = nums[0], nums[1]
-                self.current_x, self.current_y = x, y
-                self.after(0, self._update_coordinates)
-                self.after(0, self._save_coordinates)
-            except Exception as e:
-                self.after(0, lambda: self.instruction_label.config(text=f"slurp fehlgeschlagen: {e}", fg="#ff6666"))
-
-        threading.Thread(target=_worker, daemon=True).start()
 
     def _test_saved_click(self):
         button_name = self.test_button_var.get()
@@ -332,6 +451,7 @@ class SavedButtonsWindow(tk.Toplevel):
         self.configure(bg="#2b2b2b")
 
         self._setup_ui()
+        _apply_submenu_theme(self)
 
     def _setup_ui(self):
         # Main frame
@@ -695,6 +815,7 @@ class MTGBotUI(tk.Tk):
                 "pill_border": "#30394A",
                 "pill_running_bg": "#12301F",
                 "pill_running_text": "#8FE0B0",
+                "status_stopped_text": "#B07A80",
             },
             "spacing": {"xs": 8, "sm": 12, "md": 14, "lg": 18, "xl": 28, "card_pad": 28, "outer_margin": 20},
             "size": {"logo": 210, "button_width": 30, "card_width": 392},
@@ -725,6 +846,14 @@ class MTGBotUI(tk.Tk):
         style.configure("Subtitle.TLabel", background=c["surface"], foreground=c["subtitle_green"], font=f["subtitle"])
         style.configure("Status.TLabel", background=c["surface"], foreground=c["text_muted"], font=f["body"])
         style.configure("ETA.TLabel", background=c["surface"], foreground=c["text_muted"], font=f["body"])
+        style.configure(
+            "Card.Horizontal.TProgressbar",
+            troughcolor=c["surface_2"],
+            background=c["accent_primary"],
+            bordercolor=c["border"],
+            lightcolor=c["accent_hover"],
+            darkcolor=c["accent_pressed"],
+        )
 
         common_btn = {
             "font": f["button"],
@@ -856,6 +985,21 @@ class MTGBotUI(tk.Tk):
         )
         self.session_btn.pack(fill=tk.X)
 
+        self.loading_frame = ttk.Frame(card, style="Card.TFrame")
+        self.loading_label = ttk.Label(
+            self.loading_frame,
+            text="Loading Carddata",
+            style="Muted.TLabel",
+            anchor="center",
+        )
+        self.loading_label.pack(fill=tk.X, pady=(0, sp["xs"]))
+        self.loading_bar = ttk.Progressbar(
+            self.loading_frame,
+            mode="indeterminate",
+            style="Card.Horizontal.TProgressbar",
+        )
+        self.loading_bar.pack(fill=tk.X)
+
         status_frame = ttk.Frame(card, style="Card.TFrame")
         status_frame.pack(fill=tk.X, pady=(sp["lg"], 0))
 
@@ -863,7 +1007,7 @@ class MTGBotUI(tk.Tk):
             status_frame,
             text="Status: Stopped",
             bg=c["surface"],
-            fg=c["text_muted"],
+            fg=c["status_stopped_text"],
             font=self.ui_theme["font"]["body"],
             padx=0,
             pady=0,
@@ -876,6 +1020,7 @@ class MTGBotUI(tk.Tk):
 
         self._card_canvas.bind("<Configure>", lambda _e: self._refresh_card_layout())
         self.after(0, self._refresh_card_layout)
+        self._set_startup_loading(False)
         self._set_running_state(False)
 
     def _rounded_rect_points(self, x1, y1, x2, y2, r):
@@ -935,9 +1080,20 @@ class MTGBotUI(tk.Tk):
         self.status_pill.configure(
             text="Status: Stopped",
             bg=c["surface"],
-            fg=c["text_muted"],
+            fg=c["status_stopped_text"],
         )
         self.switch_eta_label.configure(text="", foreground=c["text_muted"])
+
+    def _set_startup_loading(self, loading: bool):
+        if not hasattr(self, "loading_frame"):
+            return
+        if loading:
+            self.loading_frame.pack(fill=tk.X, pady=(0, self.ui_theme["spacing"]["md"]))
+            self.loading_bar.start(12)
+            return
+        self.loading_bar.stop()
+        self.loading_frame.pack_forget()
+        self._refresh_card_layout()
 
     def _start_bot(self):
         if self.bot_running:
@@ -945,6 +1101,7 @@ class MTGBotUI(tk.Tk):
 
         self.bot_running = True
         self._set_running_state(True)
+        self._set_startup_loading(True)
 
         # Start bot in separate thread
         self.bot_thread = threading.Thread(target=self._run_bot, daemon=True)
@@ -971,6 +1128,7 @@ class MTGBotUI(tk.Tk):
             ai = DummyAI()
             self.game = Game(controller, ai)
             self.game.start()
+            self.after(0, lambda: self._set_startup_loading(False))
 
             # Wrap match end callback so we can update session stats and still restart games.
             def _on_match_end(won=None):
@@ -1010,6 +1168,7 @@ class MTGBotUI(tk.Tk):
             self.game = None
 
         self._set_running_state(False)
+        self._set_startup_loading(False)
         self._controller = None
 
     def _open_calibration(self):
@@ -1049,7 +1208,7 @@ class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, config_manager: ConfigManager, games: int, wins: int):
         super().__init__(parent)
         self.title("Settings")
-        self.geometry("520x300")
+        self.geometry("460x340")
         self.resizable(False, False)
         self.configure(bg="#2b2b2b")
         self._log_window = None
@@ -1177,6 +1336,7 @@ class SettingsWindow(tk.Toplevel):
         back_btn.pack(anchor="w", pady=(12, 0))
 
         self.update_stats(games, wins)
+        _apply_submenu_theme(self)
 
     def update_stats(self, games: int, wins: int):
         self.games_label.config(text=f"Games played: {games}")
@@ -1219,6 +1379,7 @@ class SettingsWindow(tk.Toplevel):
 
         prompt.bind("<Return>", _start_and_close)
         prompt.focus_force()
+        _apply_submenu_theme(prompt)
 
     def _start_recording(self):
         if self._recording:
@@ -1426,6 +1587,7 @@ class SettingsWindow(tk.Toplevel):
         )
         ok_btn.pack(pady=10)
         prompt.bind("<Return>", _save_and_close)
+        _apply_submenu_theme(prompt)
 
     def _save_record_snapshot(self, name: str):
         events = list(self._current_record_events)
@@ -1646,6 +1808,7 @@ class SwitchAccountWindow(tk.Toplevel):
             pady=4,
         )
         close_btn.pack(anchor="w", pady=(10, 0))
+        _apply_submenu_theme(self)
 
     def _save_switch_minutes(self):
         raw = (self.switch_minutes_var.get() or "").strip()
@@ -1733,6 +1896,7 @@ class RecordActionsWindow(tk.Toplevel):
 
         self._parent.record_btn = record_btn
         self._parent.show_records_btn = show_btn
+        _apply_submenu_theme(self)
 
     def destroy(self):
         if getattr(self._parent, "record_btn", None) is self._parent.record_btn:
@@ -1783,6 +1947,7 @@ class LogWindow(tk.Toplevel):
             pady=4,
         )
         back_btn.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        _apply_submenu_theme(self)
 
     def _refresh(self):
         if self._stopped:
@@ -1818,6 +1983,7 @@ class RecordsWindow(tk.Toplevel):
         self._records_path = records_path
         self._play_callback = play_callback
         self._setup_ui()
+        _apply_submenu_theme(self)
 
     def _setup_ui(self):
         main_frame = tk.Frame(self, bg="#2b2b2b", padx=16, pady=16)
