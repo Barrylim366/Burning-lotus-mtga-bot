@@ -58,6 +58,35 @@ def _apply_dark_combobox_style(window):
 def _apply_submenu_theme(window):
     c = _submenu_palette()
     _apply_dark_combobox_style(window)
+    style = ttk.Style(window)
+    style.configure(
+        "Submenu.TButton",
+        font=("Segoe UI", 10),
+        padding=(12, 4),
+        foreground=c["text"],
+        background=c["surface_alt"],
+        borderwidth=0,
+        relief="flat",
+    )
+    style.map(
+        "Submenu.TButton",
+        background=[("pressed", "#323232"), ("active", "#444444"), ("disabled", "#26364F")],
+        foreground=[("disabled", c["text_muted"])],
+    )
+    style.configure(
+        "SubmenuDanger.TButton",
+        font=("Segoe UI", 10),
+        padding=(12, 4),
+        foreground=c["text"],
+        background=c["danger_bg"],
+        borderwidth=0,
+        relief="flat",
+    )
+    style.map(
+        "SubmenuDanger.TButton",
+        background=[("pressed", "#311B20"), ("active", c["danger_hover"]), ("disabled", "#2A1E20")],
+        foreground=[("disabled", c["text_muted"])],
+    )
     try:
         window.configure(bg=c["bg"])
     except Exception:
@@ -92,6 +121,20 @@ def _apply_submenu_theme(window):
         if isinstance(widget, ttk.Combobox):
             try:
                 widget.configure(style="Dark.TCombobox")
+            except Exception:
+                pass
+            continue
+
+        if isinstance(widget, ttk.Button):
+            try:
+                label = str(widget.cget("text") or "").lower()
+                current_style = str(widget.cget("style") or "").strip()
+                if "delete" in label or "stop" in label:
+                    if not current_style or current_style == "TButton":
+                        widget.configure(style="SubmenuDanger.TButton")
+                else:
+                    if not current_style or current_style == "TButton":
+                        widget.configure(style="Submenu.TButton")
             except Exception:
                 pass
             continue
@@ -233,10 +276,7 @@ class CalibrationWindow(tk.Toplevel):
         self.dropdown.pack(side=tk.LEFT, padx=(0, 10))
 
         # Calibrate button
-        self.calibrate_btn = tk.Button(row1, text="Calibrate", command=self._start_calibration,
-                                        bg="#4a4a4a", fg="white", font=("Segoe UI", 10),
-                                        activebackground="#5a5a5a", activeforeground="white",
-                                        relief=tk.FLAT, padx=15, pady=5)
+        self.calibrate_btn = ttk.Button(row1, text="Calibrate", command=self._start_calibration)
         self.calibrate_btn.pack(side=tk.LEFT)
 
         # Row 2: Coordinate display
@@ -273,24 +313,13 @@ class CalibrationWindow(tk.Toplevel):
         self.instruction_label.pack(pady=(0, 15))
 
         # Row 4: Saved Buttons button
-        self.saved_btn = tk.Button(main_frame, text="Saved Buttons", command=self._show_saved_buttons,
-                                   bg="#4a4a4a", fg="white", font=("Segoe UI", 10),
-                                   activebackground="#5a5a5a", activeforeground="white",
-                                   relief=tk.FLAT, padx=15, pady=5)
+        self.saved_btn = ttk.Button(main_frame, text="Saved Buttons", command=self._show_saved_buttons)
         self.saved_btn.pack()
 
-        back_btn = tk.Button(
+        back_btn = ttk.Button(
             main_frame,
             text="Back",
             command=self.destroy,
-            bg="#3a3a3a",
-            fg="white",
-            font=("Segoe UI", 10),
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
         back_btn.pack(pady=(10, 0))
 
@@ -307,18 +336,10 @@ class CalibrationWindow(tk.Toplevel):
         )
         self.test_dropdown.pack(side=tk.LEFT, padx=(0, 10))
 
-        self.test_btn = tk.Button(
+        self.test_btn = ttk.Button(
             test_frame,
             text="Test Click",
             command=self._test_saved_click,
-            bg="#4a4a4a",
-            fg="white",
-            font=("Segoe UI", 10),
-            activebackground="#5a5a5a",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=15,
-            pady=5,
         )
         self.test_btn.pack(side=tk.LEFT)
 
@@ -353,7 +374,7 @@ class CalibrationWindow(tk.Toplevel):
             return
 
         self.is_calibrating = True
-        self.calibrate_btn.config(text="Stop", bg="#aa4444")
+        self.calibrate_btn.config(text="Stop", style="SubmenuDanger.TButton")
         self.instruction_label.config(text="Move mouse to target. Press ENTER to save.", fg="#ffff00")
 
         try:
@@ -375,7 +396,7 @@ class CalibrationWindow(tk.Toplevel):
 
     def _stop_calibration(self):
         self.is_calibrating = False
-        self.calibrate_btn.config(text="Calibrate", bg="#4a4a4a")
+        self.calibrate_btn.config(text="Calibrate", style="Submenu.TButton")
         self.instruction_label.config(text="Select a button and click 'Calibrate'", fg="#aaaaaa")
 
         if self.mouse_listener:
@@ -514,18 +535,10 @@ class SavedButtonsWindow(tk.Toplevel):
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        back_btn = tk.Button(
+        back_btn = ttk.Button(
             main_frame,
             text="Back",
             command=self.destroy,
-            bg="#3a3a3a",
-            fg="white",
-            font=("Segoe UI", 10),
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
         back_btn.pack(pady=(10, 0))
 
@@ -534,18 +547,10 @@ class SavedButtonsWindow(tk.Toplevel):
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        back_btn = tk.Button(
+        back_btn = ttk.Button(
             main_frame,
             text="Back",
             command=self.destroy,
-            bg="#3a3a3a",
-            fg="white",
-            font=("Segoe UI", 10),
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
         back_btn.pack(pady=(10, 0))
 
@@ -602,7 +607,7 @@ class ConfigManager:
             "screen_bounds": [[0, 0], [2560, 1440]],
             "input_backend": "auto",
             "account_switch_minutes": 0,
-            "credentials_path": "C:/Users/giaco/source/repos/MTG_AI_Bot-master/MTG_AI_Bot-master/credentials.txt",
+            "managed_accounts": [],
             "account_cycle_index": 0,
             "account_play_order": [],
             "click_targets": {
@@ -702,12 +707,112 @@ class ConfigManager:
         self.config["account_switch_minutes"] = minutes_i
         self._save_config()
 
-    def get_credentials_path(self) -> str:
-        return self.config.get("credentials_path", "")
+    def _repo_root(self) -> str:
+        return os.path.abspath(os.path.dirname(__file__))
 
-    def set_credentials_path(self, path: str) -> None:
-        self.config["credentials_path"] = path or ""
+    def _sanitize_folder_name(self, name: str) -> str:
+        cleaned = []
+        for ch in (name or "").strip():
+            if ch.isalnum() or ch in ("_", "-"):
+                cleaned.append(ch)
+            elif ch == " ":
+                cleaned.append(" ")
+            else:
+                cleaned.append("_")
+        candidate = "".join(cleaned).strip("._-")
+        return candidate or "account"
+
+    def _next_unique_folder_name(self, desired: str, used: set[str]) -> str:
+        if desired not in used:
+            return desired
+        i = 2
+        while True:
+            trial = f"{desired}_{i}"
+            if trial not in used:
+                return trial
+            i += 1
+
+    def get_managed_accounts(self) -> list[dict]:
+        raw = self.config.get("managed_accounts", [])
+        if not isinstance(raw, list):
+            return []
+        cleaned = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            email = str(item.get("email", "")).strip()
+            pw = str(item.get("pw", "")).strip()
+            folder = str(item.get("folder", "")).strip()
+            if not name:
+                continue
+            cleaned.append({
+                "name": name,
+                "email": email,
+                "pw": pw,
+                "folder": folder,
+            })
+        return cleaned[:10]
+
+    def save_managed_accounts(self, accounts: list[dict]) -> list[dict]:
+        if not isinstance(accounts, list):
+            return self.get_managed_accounts()
+        normalized = []
+        seen_names = set()
+        existing_by_name = {
+            str(acc.get("name", "")).casefold(): str(acc.get("folder", "")).strip()
+            for acc in self.get_managed_accounts()
+            if isinstance(acc, dict) and str(acc.get("name", "")).strip()
+        }
+        used_folders = {str(acc.get("folder", "")).strip() for acc in self.get_managed_accounts()}
+        used_folders = {name for name in used_folders if name}
+
+        for item in accounts[:10]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            email = str(item.get("email", "")).strip()
+            pw = str(item.get("pw", "")).strip()
+            if not name:
+                continue
+            if not email or not pw:
+                continue
+            key = name.casefold()
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+
+            folder = str(item.get("folder", "")).strip()
+            if not folder:
+                folder = existing_by_name.get(key, "")
+            if not folder:
+                desired = self._sanitize_folder_name(name)
+                folder = self._next_unique_folder_name(desired, used_folders)
+            used_folders.add(folder)
+
+            folder_path = os.path.join(self._repo_root(), folder)
+            os.makedirs(folder_path, exist_ok=True)
+            creds_path = os.path.join(folder_path, "credentials.json")
+            with open(creds_path, "w", encoding="utf-8") as f:
+                json.dump({name: {"email": email, "pw": pw}}, f, indent=2)
+
+            normalized.append({
+                "name": name,
+                "email": email,
+                "pw": pw,
+                "folder": folder,
+            })
+
+        self.config["managed_accounts"] = normalized
+        valid = {acc["name"].casefold() for acc in normalized}
+        order = [x for x in self.get_account_play_order() if x.casefold() in valid]
+        self.config["account_play_order"] = order
+        if len(normalized) <= 1:
+            self.config["account_cycle_index"] = 0
+        elif self.get_account_cycle_index() >= len(normalized):
+            self.config["account_cycle_index"] = 0
         self._save_config()
+        return normalized
 
     def get_account_cycle_index(self) -> int:
         try:
@@ -734,7 +839,20 @@ class ConfigManager:
     def set_account_play_order(self, order: list[str]) -> None:
         if not isinstance(order, list):
             return
-        cleaned = [str(item) for item in order if item]
+        valid_names = {acc["name"].casefold() for acc in self.get_managed_accounts() if acc.get("name")}
+        cleaned = []
+        seen = set()
+        for item in order:
+            name = str(item).strip()
+            if not name:
+                continue
+            key = name.casefold()
+            if key in seen:
+                continue
+            if key not in valid_names:
+                continue
+            seen.add(key)
+            cleaned.append(name)
         self.config["account_play_order"] = cleaned
         self._save_config()
 
@@ -758,6 +876,7 @@ class MTGBotUI(tk.Tk):
         self.session_games = 0
         self.session_wins = 0
         self.settings_window = None
+        self.current_session_window = None
         self._controller = None
         self._switch_eta_text = self._get_configured_switch_eta_text()
 
@@ -907,6 +1026,9 @@ class MTGBotUI(tk.Tk):
             foreground=[("disabled", c["disabled_text"])],
             bordercolor=[("pressed", "#5A2A31"), ("active", "#5A2A31"), ("disabled", c["border"])],
         )
+        style.configure("Primary.TButton", font=f["button"])
+        style.configure("Secondary.TButton", font=f["button"])
+        style.configure("Destructive.TButton", font=f["button"])
 
     def _setup_ui(self):
         c = self.ui_theme["colors"]
@@ -979,14 +1101,23 @@ class MTGBotUI(tk.Tk):
         )
         self.calibrate_btn.pack(fill=tk.X, pady=(0, gap))
 
-        self.session_btn = ttk.Button(
+        self.current_session_btn = ttk.Button(
+            buttons_frame,
+            text="Current Session",
+            command=self._open_current_session,
+            style="Secondary.TButton",
+            width=btn_width,
+        )
+        self.current_session_btn.pack(fill=tk.X, pady=(0, gap))
+
+        self.settings_btn = ttk.Button(
             buttons_frame,
             text="Settings",
             command=self._open_settings,
             style="Secondary.TButton",
             width=btn_width,
         )
-        self.session_btn.pack(fill=tk.X)
+        self.settings_btn.pack(fill=tk.X)
 
         self.loading_frame = ttk.Frame(card, style="Card.TFrame")
         self.loading_label = ttk.Label(
@@ -1125,13 +1256,11 @@ class MTGBotUI(tk.Tk):
             screen_bounds = self.config_manager.get_screen_bounds()
             input_backend = self.config_manager.get_input_backend()
             account_switch_minutes = self.config_manager.get_account_switch_minutes()
-            credentials_path = self.config_manager.get_credentials_path()
             account_cycle_index = self.config_manager.get_account_cycle_index()
             account_play_order = self.config_manager.get_account_play_order()
             controller = Controller(log_path=log_path, screen_bounds=screen_bounds,
                                    click_targets=click_targets, input_backend=input_backend,
                                    account_switch_minutes=account_switch_minutes,
-                                   credentials_path=credentials_path,
                                    account_cycle_index=account_cycle_index,
                                    account_play_order=account_play_order)
             self._controller = controller
@@ -1145,7 +1274,7 @@ class MTGBotUI(tk.Tk):
                 self.session_games += 1
                 if won is True:
                     self.session_wins += 1
-                self.after(0, self._update_settings_window)
+                self.after(0, self._update_current_session_window)
                 try:
                     if self.game:
                         self.game.on_match_end(won)
@@ -1184,17 +1313,24 @@ class MTGBotUI(tk.Tk):
     def _open_calibration(self):
         CalibrationWindow(self, self.config_manager)
 
+    def _open_current_session(self):
+        if self.current_session_window and self.current_session_window.winfo_exists():
+            self.current_session_window.lift()
+            self.current_session_window.focus_force()
+            return
+        self.current_session_window = CurrentSessionWindow(self, self.session_games, self.session_wins)
+        self.current_session_window.update_stats(self.session_games, self.session_wins, self._switch_eta_text)
+
+    def _update_current_session_window(self):
+        if self.current_session_window and self.current_session_window.winfo_exists():
+            self.current_session_window.update_stats(self.session_games, self.session_wins, self._switch_eta_text)
+
     def _open_settings(self):
         if self.settings_window and self.settings_window.winfo_exists():
             self.settings_window.lift()
             self.settings_window.focus_force()
             return
-        self.settings_window = SettingsWindow(self, self.config_manager, self.session_games, self.session_wins)
-        self.settings_window.update_stats(self.session_games, self.session_wins, self._switch_eta_text)
-
-    def _update_settings_window(self):
-        if self.settings_window and self.settings_window.winfo_exists():
-            self.settings_window.update_stats(self.session_games, self.session_wins, self._switch_eta_text)
+        self.settings_window = SettingsWindow(self, self.config_manager)
 
     def _update_switch_eta(self):
         if not self.bot_running:
@@ -1212,15 +1348,15 @@ class MTGBotUI(tk.Tk):
             self._switch_eta_text = "Account switch: off"
         else:
             self._switch_eta_text = f"{minutes} Min till Account Switch"
-        self._update_settings_window()
+        self._update_current_session_window()
         self.after(10000, self._update_switch_eta)
 
 
-class SettingsWindow(tk.Toplevel):
-    def __init__(self, parent, config_manager: ConfigManager, games: int, wins: int):
+class CurrentSessionWindow(tk.Toplevel):
+    def __init__(self, parent, games: int, wins: int):
         super().__init__(parent)
-        self.title("Settings")
-        width, height = 460, 390
+        self.title("Current Session")
+        width, height = 460, 220
         gap_px = int(parent.winfo_fpixels("5m"))  # ~5 mm
         parent.update_idletasks()
         x = parent.winfo_x()
@@ -1230,7 +1366,57 @@ class SettingsWindow(tk.Toplevel):
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
         self.configure(bg="#2b2b2b")
-        self._log_window = None
+
+        frame = tk.Frame(self, bg="#2b2b2b", padx=20, pady=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        title = tk.Label(frame, text="Current session", bg="#2b2b2b", fg="white",
+                         font=("Segoe UI", 12, "bold"))
+        title.pack(pady=(0, 12))
+
+        stats_frame = tk.Frame(frame, bg="#2b2b2b")
+        stats_frame.pack(fill=tk.X)
+
+        self.switch_eta_label = tk.Label(stats_frame, text="", bg="#2b2b2b", fg="#00ff00", font=("Consolas", 12))
+        self.switch_eta_label.pack(anchor="w", pady=4)
+
+        self.games_label = tk.Label(stats_frame, text="", bg="#2b2b2b", fg="#00ff00", font=("Consolas", 12))
+        self.games_label.pack(anchor="w", pady=4)
+
+        self.wins_label = tk.Label(stats_frame, text="", bg="#2b2b2b", fg="#00ff00", font=("Consolas", 12))
+        self.wins_label.pack(anchor="w", pady=4)
+
+        back_btn = ttk.Button(
+            frame,
+            text="Back",
+            command=self.destroy,
+        )
+        back_btn.pack(anchor="w", pady=(12, 0))
+
+        self.update_stats(games, wins, "Account switch: off")
+        _apply_submenu_theme(self)
+
+    def update_stats(self, games: int, wins: int, switch_eta_text: str | None = None):
+        if switch_eta_text is not None:
+            self.switch_eta_label.config(text=switch_eta_text)
+        self.games_label.config(text=f"Games played: {games}")
+        self.wins_label.config(text=f"Win: {wins}")
+
+
+class SettingsWindow(tk.Toplevel):
+    def __init__(self, parent, config_manager: ConfigManager):
+        super().__init__(parent)
+        self.title("Settings")
+        width, height = 460, 230
+        gap_px = int(parent.winfo_fpixels("5m"))  # ~5 mm
+        parent.update_idletasks()
+        x = parent.winfo_x()
+        y = parent.winfo_rooty() + parent.winfo_height() + gap_px
+        max_y = max(0, self.winfo_screenheight() - height)
+        y = min(y, max_y)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.resizable(False, False)
+        self.configure(bg="#2b2b2b")
         self._config_manager = config_manager
         self._recording = False
         self._record_ignore_first = False
@@ -1269,113 +1455,61 @@ class SettingsWindow(tk.Toplevel):
             background=[("readonly", "#3a3a3a")],
             foreground=[("readonly", "white")],
         )
-
-        title = tk.Label(frame, text="Current session", bg="#2b2b2b", fg="white",
-                         font=("Segoe UI", 12, "bold"))
-        title.pack(pady=(0, 12))
-
-        stats_frame = tk.Frame(frame, bg="#2b2b2b")
-        stats_frame.pack(fill=tk.X)
-
-        self.switch_eta_label = tk.Label(stats_frame, text="", bg="#2b2b2b", fg="#00ff00", font=("Consolas", 12))
-        self.switch_eta_label.pack(anchor="w", pady=4)
-
-        self.games_label = tk.Label(stats_frame, text="", bg="#2b2b2b", fg="#00ff00", font=("Consolas", 12))
-        self.games_label.pack(anchor="w", pady=4)
-
-        self.wins_label = tk.Label(stats_frame, text="", bg="#2b2b2b", fg="#00ff00", font=("Consolas", 12))
-        self.wins_label.pack(anchor="w", pady=4)
-
-        sep = tk.Frame(frame, bg="#4a4a4a", height=1)
-        sep.pack(fill=tk.X, pady=(0, 12))
-
-        log_row = tk.Frame(frame, bg="#2b2b2b")
-        log_row.pack(fill=tk.X)
-
-        log_label = tk.Label(log_row, text="Show Log", bg="#2b2b2b", fg="white", font=("Segoe UI", 10))
-        log_label.pack(side=tk.LEFT)
-
-        self.show_log_var = tk.BooleanVar(value=False)
-        show_log_cb = tk.Checkbutton(
-            log_row,
-            variable=self.show_log_var,
-            command=self._toggle_log_window,
-            bg="#2b2b2b",
-            fg="white",
-            activebackground="#2b2b2b",
-            activeforeground="white",
-            selectcolor="#2b2b2b",
+        style.configure(
+            "Manage.TButton",
+            font=("Segoe UI", 10),
+            padding=(12, 4),
+            foreground="white",
+            background="#3a3a3a",
+            borderwidth=0,
+            relief="flat",
         )
-        show_log_cb.pack(side=tk.LEFT, padx=(10, 0))
+        style.map(
+            "Manage.TButton",
+            background=[("pressed", "#323232"), ("active", "#444444")],
+        )
+        style.configure(
+            "ManagePrimary.TButton",
+            font=("Segoe UI", 10),
+            padding=(12, 4),
+            foreground="white",
+            background="#3a3a3a",
+            borderwidth=0,
+            relief="flat",
+        )
+        style.map(
+            "ManagePrimary.TButton",
+            background=[("pressed", "#323232"), ("active", "#444444")],
+        )
 
-        switch_row = tk.Frame(frame, bg="#2b2b2b")
-        switch_row.pack(fill=tk.X, pady=(12, 0))
+        manage_row = tk.Frame(frame, bg="#2b2b2b")
+        manage_row.pack(fill=tk.X)
 
-        switch_btn = tk.Button(
-            switch_row,
-            text="Switch Account",
+        manage_btn = ttk.Button(
+            manage_row,
+            text="Manage Accounts",
             command=self._open_switch_account_window,
-            bg="#3a3a3a",
-            fg="white",
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
-        switch_btn.pack(side=tk.LEFT)
+        manage_btn.pack(side=tk.LEFT)
 
         record_row = tk.Frame(frame, bg="#2b2b2b")
         record_row.pack(fill=tk.X, pady=(12, 0))
 
-        record_btn = tk.Button(
+        record_btn = ttk.Button(
             record_row,
             text="Record Action",
             command=self._open_record_actions_window,
-            bg="#3a3a3a",
-            fg="white",
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
         record_btn.pack(side=tk.LEFT)
 
-        back_btn = tk.Button(
+        back_btn = ttk.Button(
             frame,
             text="Back",
             command=self.destroy,
-            bg="#3a3a3a",
-            fg="white",
-            font=("Segoe UI", 10),
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
         back_btn.pack(anchor="w", pady=(12, 0))
 
-        self.update_stats(games, wins, "Account switch: off")
         _apply_submenu_theme(self)
-
-    def update_stats(self, games: int, wins: int, switch_eta_text: str | None = None):
-        if switch_eta_text is not None:
-            self.switch_eta_label.config(text=switch_eta_text)
-        self.games_label.config(text=f"Games played: {games}")
-        self.wins_label.config(text=f"Win: {wins}")
-
-    def _toggle_log_window(self):
-        if self.show_log_var.get():
-            if self._log_window and self._log_window.winfo_exists():
-                self._log_window.lift()
-                return
-            self._log_window = LogWindow(self, "human.log")
-        else:
-            if self._log_window and self._log_window.winfo_exists():
-                self._log_window.destroy()
-            self._log_window = None
 
     def _record_actions_prompt(self):
         if self._recording:
@@ -1597,17 +1731,10 @@ class SettingsWindow(tk.Toplevel):
             prompt.destroy()
             self._save_record_snapshot(name)
 
-        ok_btn = tk.Button(
+        ok_btn = ttk.Button(
             prompt,
             text="Save",
             command=_save_and_close,
-            bg="#3a3a3a",
-            fg="white",
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=10,
-            pady=2,
         )
         ok_btn.pack(pady=10)
         prompt.bind("<Return>", _save_and_close)
@@ -1671,8 +1798,6 @@ class SettingsWindow(tk.Toplevel):
 
     def destroy(self):
         try:
-            if self._log_window and self._log_window.winfo_exists():
-                self._log_window.destroy()
             if self._recording:
                 self._stop_recording()
         finally:
@@ -1684,10 +1809,13 @@ class SwitchAccountWindow(tk.Toplevel):
         super().__init__(parent)
         self._parent = parent
         self._config_manager = config_manager
-        self.title("Switch Account")
-        self.geometry("560x260")
+        self.title("Manage Accounts")
+        self.geometry("920x720")
         self.resizable(False, False)
         self.configure(bg="#2b2b2b")
+        self._order_combos = []
+        self._order_vars = []
+        self._account_rows = []
 
         frame = tk.Frame(self, bg="#2b2b2b", padx=20, pady=20)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -1714,8 +1842,17 @@ class SwitchAccountWindow(tk.Toplevel):
             foreground=[("readonly", "white")],
         )
 
+        title = tk.Label(
+            frame,
+            text="Manage Accounts",
+            bg="#2b2b2b",
+            fg="white",
+            font=("Segoe UI", 12, "bold"),
+        )
+        title.pack(anchor="w", pady=(0, 10))
+
         switch_row = tk.Frame(frame, bg="#2b2b2b")
-        switch_row.pack(fill=tk.X)
+        switch_row.pack(fill=tk.X, pady=(0, 12))
 
         switch_label = tk.Label(
             switch_row,
@@ -1748,22 +1885,106 @@ class SwitchAccountWindow(tk.Toplevel):
         )
         switch_hint.pack(side=tk.LEFT, padx=(6, 0))
 
-        switch_save = tk.Button(
+        switch_save = ttk.Button(
             switch_row,
             text="Save",
             command=self._save_switch_minutes,
-            bg="#3a3a3a",
-            fg="white",
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=10,
-            pady=2,
+            style="ManagePrimary.TButton",
         )
-        switch_save.pack(side=tk.RIGHT)
+        switch_save.pack(side=tk.LEFT, padx=(10, 0))
+
+        accounts_title = tk.Label(
+            frame,
+            text="Accounts (max 10)",
+            bg="#2b2b2b",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+        )
+        accounts_title.pack(anchor="w")
+
+        header = tk.Frame(frame, bg="#2b2b2b")
+        header.pack(fill=tk.X, pady=(6, 0))
+        tk.Label(header, text="#", width=3, bg="#2b2b2b", fg="#aaaaaa", font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Label(header, text="Name", width=18, anchor="w", bg="#2b2b2b", fg="#aaaaaa", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(6, 6))
+        tk.Label(header, text="Email", width=35, anchor="w", bg="#2b2b2b", fg="#aaaaaa", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(header, text="Password", width=24, anchor="w", bg="#2b2b2b", fg="#aaaaaa", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 6))
+
+        rows_wrap = tk.Frame(frame, bg="#2b2b2b")
+        rows_wrap.pack(fill=tk.X, pady=(2, 0))
+
+        existing_accounts = self._config_manager.get_managed_accounts()
+        existing_accounts = existing_accounts[:10]
+        for idx in range(10):
+            row = tk.Frame(rows_wrap, bg="#2b2b2b")
+            row.pack(fill=tk.X, pady=2)
+            tk.Label(
+                row,
+                text=str(idx + 1),
+                width=3,
+                bg="#2b2b2b",
+                fg="#aaaaaa",
+                font=("Segoe UI", 9),
+            ).pack(side=tk.LEFT)
+
+            account = existing_accounts[idx] if idx < len(existing_accounts) else {}
+            name_var = tk.StringVar(value=str(account.get("name", "")))
+            email_var = tk.StringVar(value=str(account.get("email", "")))
+            pw_var = tk.StringVar(value=str(account.get("pw", "")))
+
+            name_entry = tk.Entry(
+                row,
+                textvariable=name_var,
+                width=20,
+                bg="#1e1e1e",
+                fg="white",
+                insertbackground="white",
+                relief=tk.FLAT,
+            )
+            name_entry.pack(side=tk.LEFT, padx=(6, 6))
+
+            email_entry = tk.Entry(
+                row,
+                textvariable=email_var,
+                width=38,
+                bg="#1e1e1e",
+                fg="white",
+                insertbackground="white",
+                relief=tk.FLAT,
+            )
+            email_entry.pack(side=tk.LEFT, padx=(0, 6))
+
+            pw_entry = tk.Entry(
+                row,
+                textvariable=pw_var,
+                show="*",
+                width=26,
+                bg="#1e1e1e",
+                fg="white",
+                insertbackground="white",
+                relief=tk.FLAT,
+            )
+            pw_entry.pack(side=tk.LEFT, padx=(0, 6))
+
+            self._account_rows.append({
+                "name_var": name_var,
+                "email_var": email_var,
+                "pw_var": pw_var,
+                "folder": str(account.get("folder", "")),
+            })
+
+        save_accounts_btn = ttk.Button(
+            frame,
+            text="Save Accounts",
+            command=self._save_accounts,
+            style="Manage.TButton",
+        )
+        save_accounts_btn.pack(anchor="w", pady=(10, 0))
+
+        sep = tk.Frame(frame, bg="#4a4a4a", height=1)
+        sep.pack(fill=tk.X, pady=(12, 10))
 
         order_row = tk.Frame(frame, bg="#2b2b2b")
-        order_row.pack(fill=tk.X, pady=(16, 0))
+        order_row.pack(fill=tk.X)
 
         order_label = tk.Label(
             order_row,
@@ -1777,12 +1998,11 @@ class SwitchAccountWindow(tk.Toplevel):
         order_inner = tk.Frame(order_row, bg="#2b2b2b")
         order_inner.pack(side=tk.LEFT, padx=(10, 0))
 
-        order_choices = ["", "Acc_1", "Acc_2", "Acc_3"]
+        order_choices = [""] + [acc.get("name", "") for acc in existing_accounts if acc.get("name")]
         current_order = self._config_manager.get_account_play_order()
-        current_order = current_order[:3] + ["", "", ""]
+        current_order = current_order[:10] + [""] * 10
 
-        self._order_vars = []
-        for idx in range(3):
+        for idx in range(10):
             num_label = tk.Label(
                 order_inner,
                 text=str(idx + 1),
@@ -1791,7 +2011,9 @@ class SwitchAccountWindow(tk.Toplevel):
                 font=("Segoe UI", 9),
                 width=2,
             )
-            num_label.pack(side=tk.LEFT, padx=(0, 2))
+            row_i = idx % 5
+            col_i = idx // 5
+            num_label.grid(row=row_i, column=col_i * 2, sticky="w", padx=(0, 2), pady=2)
 
             var = tk.StringVar(value=current_order[idx] if idx < len(current_order) else "")
             combo = ttk.Combobox(
@@ -1799,40 +2021,30 @@ class SwitchAccountWindow(tk.Toplevel):
                 textvariable=var,
                 values=order_choices,
                 state="readonly",
-                width=7,
+                width=18,
             )
             combo.configure(style="Dark.TCombobox")
-            combo.pack(side=tk.LEFT, padx=(0, 6))
+            combo.grid(row=row_i, column=col_i * 2 + 1, sticky="w", padx=(0, 12), pady=2)
             self._order_vars.append(var)
+            self._order_combos.append(combo)
 
-        save_order_btn = tk.Button(
+        save_order_btn = ttk.Button(
             frame,
             text="Save Order",
             command=self._save_account_play_order,
-            bg="#3a3a3a",
-            fg="white",
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
+            style="Manage.TButton",
         )
         save_order_btn.pack(anchor="w", pady=(12, 0))
 
-        close_btn = tk.Button(
+        close_btn = ttk.Button(
             frame,
             text="Close",
             command=self.destroy,
-            bg="#3a3a3a",
-            fg="white",
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
+            style="Manage.TButton",
         )
         close_btn.pack(anchor="w", pady=(10, 0))
         _apply_submenu_theme(self)
+        self._refresh_order_choices()
 
     def _save_switch_minutes(self):
         raw = (self.switch_minutes_var.get() or "").strip()
@@ -1848,7 +2060,59 @@ class SwitchAccountWindow(tk.Toplevel):
         self._config_manager.set_account_switch_minutes(minutes)
         messagebox.showinfo("Saved", "Switch account minutes saved.")
 
+    def _refresh_order_choices(self):
+        names = []
+        for row in self._account_rows:
+            name = (row["name_var"].get() or "").strip()
+            if name and name not in names:
+                names.append(name)
+        choices = [""] + names
+        for combo in self._order_combos:
+            combo.configure(values=choices)
+        for var in self._order_vars:
+            if var.get() and var.get() not in names:
+                var.set("")
+
+    def _save_accounts(self):
+        accounts = []
+        seen = set()
+        for idx, row in enumerate(self._account_rows, start=1):
+            name = (row["name_var"].get() or "").strip()
+            email = (row["email_var"].get() or "").strip()
+            pw = (row["pw_var"].get() or "").strip()
+            if not name and not email and not pw:
+                continue
+            if not name or not email or not pw:
+                messagebox.showerror("Save Accounts", f"Row {idx}: Name, Email and Password are required.")
+                return
+            key = name.casefold()
+            if key in seen:
+                messagebox.showerror("Save Accounts", f"Duplicate account name: {name}")
+                return
+            seen.add(key)
+            accounts.append({
+                "name": name,
+                "email": email,
+                "pw": pw,
+                "folder": row.get("folder", ""),
+            })
+
+        try:
+            saved_accounts = self._config_manager.save_managed_accounts(accounts)
+        except Exception as e:
+            messagebox.showerror("Save Accounts", f"Failed to save accounts: {e}")
+            return
+        for idx, item in enumerate(saved_accounts):
+            if idx >= len(self._account_rows):
+                break
+            self._account_rows[idx]["folder"] = str(item.get("folder", ""))
+        for idx in range(len(saved_accounts), len(self._account_rows)):
+            self._account_rows[idx]["folder"] = ""
+        self._refresh_order_choices()
+        messagebox.showinfo("Saved", f"Saved {len(saved_accounts)} account(s).")
+
     def _save_account_play_order(self):
+        self._refresh_order_choices()
         order = [var.get().strip() for var in getattr(self, "_order_vars", [])]
         order = [item for item in order if item]
         self._config_manager.set_account_play_order(order)
@@ -1876,45 +2140,24 @@ class RecordActionsWindow(tk.Toplevel):
         frame = tk.Frame(self, bg="#2b2b2b", padx=20, pady=20)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        record_btn = tk.Button(
+        record_btn = ttk.Button(
             frame,
             text="Record",
             command=self._parent._record_actions_prompt,
-            bg="#3a3a3a",
-            fg="white",
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
         record_btn.pack(anchor="w")
 
-        show_btn = tk.Button(
+        show_btn = ttk.Button(
             frame,
             text="Show Records",
             command=self._parent._show_records,
-            bg="#3a3a3a",
-            fg="white",
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
         show_btn.pack(anchor="w", pady=(8, 0))
 
-        close_btn = tk.Button(
+        close_btn = ttk.Button(
             frame,
             text="Close",
             command=self.destroy,
-            bg="#3a3a3a",
-            fg="white",
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
         close_btn.pack(anchor="w", pady=(10, 0))
 
@@ -1957,18 +2200,10 @@ class LogWindow(tk.Toplevel):
         self.text.config(state=tk.DISABLED)
         self._refresh()
 
-        back_btn = tk.Button(
+        back_btn = ttk.Button(
             frame,
             text="Back",
             command=self.destroy,
-            bg="#3a3a3a",
-            fg="white",
-            font=("Segoe UI", 10),
-            activebackground="#444444",
-            activeforeground="white",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
         )
         back_btn.grid(row=2, column=0, sticky="w", pady=(8, 0))
         _apply_submenu_theme(self)
@@ -2079,31 +2314,17 @@ class RecordsWindow(tk.Toplevel):
                 )
                 ts_label.pack(side=tk.LEFT, padx=(6, 0))
 
-                test_btn = tk.Button(
+                test_btn = ttk.Button(
                     item,
                     text="Test Action",
                     command=lambda a=rec.get("actions", []): self._play_callback(a),
-                    bg="#00ff00",
-                    fg="#1e1e1e",
-                    activebackground="#33ff33",
-                    activeforeground="#1e1e1e",
-                    relief=tk.FLAT,
-                    padx=8,
-                    pady=2,
                 )
                 test_btn.pack(side=tk.RIGHT)
 
-                del_btn = tk.Button(
+                del_btn = ttk.Button(
                     item,
                     text="Delete",
                     command=lambda i=idx: self._delete_record(i),
-                    bg="#5a2a2a",
-                    fg="white",
-                    activebackground="#6a3333",
-                    activeforeground="white",
-                    relief=tk.FLAT,
-                    padx=8,
-                    pady=2,
                 )
                 del_btn.pack(side=tk.RIGHT, padx=(0, 8))
 
@@ -2224,3 +2445,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+

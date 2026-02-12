@@ -63,12 +63,32 @@
         }
     },
     "input_backend": "auto",
-    "account_switch_minutes": 40,
+    "account_switch_minutes": 1,
     "credentials_path": "C:/Users/giaco/source/repos/MTG_AI_Bot-master/MTG_AI_Bot-master/credentials.txt",
-    "account_cycle_index": 0,
+    "account_cycle_index": 1,
     "account_play_order": [
-        "Acc_3",
-        "Acc_1",
-        "Acc_2"
+        "TEUBAT",
+        "Affinity2004",
+        "Ayaylll"
+    ],
+    "managed_accounts": [
+        {
+            "name": "TEUBAT",
+            "email": "giacomo.joghurt@web.de",
+            "pw": "Universal123*",
+            "folder": "TEUBAT"
+        },
+        {
+            "name": "Affinity2004",
+            "email": "giacomoj92@gmail.com",
+            "pw": "Universal123*",
+            "folder": "Affinity2004"
+        },
+        {
+            "name": "Ayaylll",
+            "email": "giacogispower@gmail.com",
+            "pw": "Universal123*",
+            "folder": "Ayaylll"
+        }
     ]
 }
