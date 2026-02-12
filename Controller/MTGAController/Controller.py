@@ -358,15 +358,25 @@ class Controller(ControllerSecondary):
         return None
 
     def _accounts_base_dir(self) -> str:
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "Accounts"))
+        try:
+            os.makedirs(base, exist_ok=True)
+        except Exception:
+            pass
+        return base
+
+    def _legacy_accounts_base_dir(self) -> str:
         return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
     def _resolve_account_dir(self, account: dict) -> str | None:
         folder_name = str(account.get("folder", "")).strip()
         if not folder_name:
             return None
-        full = os.path.join(self._accounts_base_dir(), folder_name)
-        if os.path.isdir(full):
-            return full
+        bases = [self._accounts_base_dir(), self._legacy_accounts_base_dir()]
+        for base in bases:
+            full = os.path.join(base, folder_name)
+            if os.path.isdir(full):
+                return full
         return None
 
     def _choose_deck_image(
@@ -1583,38 +1593,44 @@ class Controller(ControllerSecondary):
         return order
 
     def _load_accounts_from_dirs(self) -> list[dict]:
-        base_dir = self._accounts_base_dir()
         accounts = []
+        seen_folders = set()
         try:
-            for entry in os.listdir(base_dir):
-                full = os.path.join(base_dir, entry)
-                if not os.path.isdir(full):
-                    continue
-                creds_json = os.path.join(full, "credentials.json")
-                if not os.path.isfile(creds_json):
-                    continue
-                try:
-                    with open(creds_json, "r", encoding="utf-8") as f:
-                        payload = json.load(f)
-                except Exception as e:
-                    bot_logger.log_error(f"Failed to read account credentials from {creds_json}: {e}")
-                    continue
-                if not isinstance(payload, dict) or not payload:
-                    continue
-                first_name = next(iter(payload.keys()))
-                details = payload.get(first_name, {})
-                if not isinstance(details, dict):
-                    continue
-                email = str(details.get("email", "")).strip()
-                pw = str(details.get("pw", "")).strip()
-                if not first_name or not email or not pw:
-                    continue
-                accounts.append({
-                    "name": str(first_name).strip(),
-                    "folder": entry,
-                    "email": email,
-                    "pw": pw,
-                })
+            scan_dirs = [self._accounts_base_dir(), self._legacy_accounts_base_dir()]
+            for base_dir in scan_dirs:
+                for entry in os.listdir(base_dir):
+                    full = os.path.join(base_dir, entry)
+                    if not os.path.isdir(full):
+                        continue
+                    entry_key = entry.casefold()
+                    if entry_key in seen_folders:
+                        continue
+                    creds_json = os.path.join(full, "credentials.json")
+                    if not os.path.isfile(creds_json):
+                        continue
+                    try:
+                        with open(creds_json, "r", encoding="utf-8") as f:
+                            payload = json.load(f)
+                    except Exception as e:
+                        bot_logger.log_error(f"Failed to read account credentials from {creds_json}: {e}")
+                        continue
+                    if not isinstance(payload, dict) or not payload:
+                        continue
+                    first_name = next(iter(payload.keys()))
+                    details = payload.get(first_name, {})
+                    if not isinstance(details, dict):
+                        continue
+                    email = str(details.get("email", "")).strip()
+                    pw = str(details.get("pw", "")).strip()
+                    if not first_name or not email or not pw:
+                        continue
+                    accounts.append({
+                        "name": str(first_name).strip(),
+                        "folder": entry,
+                        "email": email,
+                        "pw": pw,
+                    })
+                    seen_folders.add(entry_key)
         except Exception as e:
             bot_logger.log_error(f"Failed to scan account folders: {e}")
             return []

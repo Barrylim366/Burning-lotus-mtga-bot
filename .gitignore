@@ -13,12 +13,8 @@ dist/
 
 # Keep folders, ignore their contents
 Buttons/*
-Acc_1/*
-Acc_2/*
-Acc_3/*
+Accounts/*
 !Buttons/.gitkeep
-!Acc_1/.gitkeep
-!Acc_2/.gitkeep
-!Acc_3/.gitkeep
+!Accounts/.gitkeep
 
 

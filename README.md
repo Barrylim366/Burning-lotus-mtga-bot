@@ -45,7 +45,7 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Current session stats (`X Min till Account Switch`, `Games played`, `Win`) were moved out of **Settings** into **Current Session**
 - Settings window uses the same width (`460`) with a reduced height (`230`) focused on account/actions tools
 - **Manage Accounts** now supports up to 10 accounts with editable `Name`, `Email`, `Password` rows and dynamic play-order slots
-- Saving accounts creates/updates one folder per account in the repo and writes `credentials.json` inside that folder
+- Saving accounts creates/updates one folder per account under `Accounts/` and writes `credentials.json` inside that folder
 - Password input fields in **Manage Accounts** are masked (`*`) while typing
 - In **Manage Accounts**, the **Switch account (min)** save button is placed directly next to `0 = off` with a prominent blue style
 - Manage Accounts window height was increased to avoid bottom content clipping
@@ -87,8 +87,9 @@ Stop bot any time with **Mouse Wheel Down**.
 ## Account Switching
 
 - Accounts are managed via **Settings -> Manage Accounts**.
-- Each account is saved in its own folder in the repo and includes `credentials.json` in this format:
+- Each account is saved in its own folder under `Accounts/` and includes `credentials.json` in this format:
   - `{ "<AccountName>": { "email": "...", "pw": "..." } }`
+- `Accounts/` is gitignored by default so local account folders are not pushed to GitHub.
 - Switch happens when the timer expires and the bot reaches a safe screen.
 - Logout/login uses recorded action sequence + credentials injection.
 - If the client is in the Store scene during fallback logout, the bot logs the last scene and presses ESC twice to reach the options menu.
