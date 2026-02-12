@@ -40,7 +40,12 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Stop button uses a subtle red background treatment
 - Button focus outline is neutralized (no red focus ring on the last clicked button)
 - All submenu/pop-up windows now inherit the same bluish-dark UI palette via centralized submenu theming
-- Settings window size now matches main window width (`460`) and is about 1 cm taller than before (`340` height)
+- Settings window size now matches main window width (`460`) and is taller (`390` height) to fit additional session info
+- Settings window opens below the main menu with roughly 5 mm vertical spacing and aligned X position
+- `X Min till Account Switch` was moved from main menu to Settings > Current session (above `Games played`, same color as stats)
+- Account switch ETA text in Settings is initialized immediately from saved config on app start (e.g. `15 Min till Account Switch`)
+- Main menu window size is fixed (width and height are both non-resizable)
+- Main menu top-left corner is fixed at screen coordinates `x=18`, `y=24`; Settings follows the main window position
 - During bot startup, the UI shows an indeterminate loading bar with the label `Loading Carddata` until initialization finishes
 - Fixed a startup regression in `ui.py` caused by a mismatched theme token in the loading bar style
 - `Status: Stopped` now uses a subtle red text tone
@@ -93,6 +98,8 @@ After account switch the bot:
 
 Deck images are matched by filename letters (e.g. `RG.png`, `WU.png`, `R.png`).
 Creature quests use `C.png`.
+If the planned account deck image is not found after login, the bot retries deck selection
+across available `Acc_*` folders and logs account/deck mismatches in `bot.log`.
 The `Acc_1`, `Acc_2`, `Acc_3` and `Buttons` folders are kept in Git, but their
 contents are ignored (see .gitignore). Keep your local images there.
 
