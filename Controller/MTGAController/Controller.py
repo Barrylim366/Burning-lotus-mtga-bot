@@ -1220,7 +1220,7 @@ class Controller(ControllerSecondary):
         elif pattern == self.patterns["pay_costs"]:
             self.__pending_pay_costs_ts = time.time()
             bot_logger.log_info("PayCostsReq detected: attempting auto-pay.")
-            threading.Timer(0.6, self.submit_selection).start()
+            self.__handle_pay_costs_req(line_containing_pattern)
 
     def _account_switch_due(self) -> bool:
         if self._account_switch_interval <= 0:
@@ -1935,6 +1935,75 @@ class Controller(ControllerSecondary):
         except Exception as e:
             bot_logger.log_error(f"Failed to handle SelectNReq: {e}")
 
+    def __handle_pay_costs_req(self, line: str) -> None:
+        try:
+            start = line.find("{")
+            if start == -1:
+                threading.Timer(0.6, lambda: self.submit_selection(reason="pay_costs_no_payload", force=True)).start()
+                return
+            payload = json.loads(line[start:])
+            messages = payload.get("greToClientEvent", {}).get("greToClientMessages", [])
+            handled_selection = False
+
+            for message in messages:
+                if message.get("type") != "GREMessageType_PayCostsReq":
+                    continue
+                seat_ids = message.get("systemSeatIds") or []
+                if self.__system_seat_id is not None and seat_ids and self.__system_seat_id not in seat_ids:
+                    continue
+
+                pay_req = message.get("payCostsReq", {}) or {}
+                effect_cost = pay_req.get("effectCostReq", {}) or {}
+                cost_sel = effect_cost.get("costSelection", {}) or {}
+                ids = list(cost_sel.get("ids", []) or [])
+                min_sel = int(cost_sel.get("minSel", 0) or 0)
+                max_sel = int(cost_sel.get("maxSel", 0) or 0)
+
+                if not ids or min_sel <= 0:
+                    continue
+
+                handled_selection = True
+                bot_logger.log_info(
+                    f"PayCostsReq selection detected: minSel={min_sel} maxSel={max_sel} ids={ids}"
+                )
+
+                hand_zone = None
+                try:
+                    if self.__system_seat_id is not None:
+                        hand_zone = self.updated_game_state.get_zone("ZoneType_Hand", self.__system_seat_id)
+                except Exception:
+                    hand_zone = None
+                hand_ids = set(hand_zone.get("objectInstanceIds", []) or []) if hand_zone else set()
+                preferred_ids = [cid for cid in ids if cid in hand_ids]
+                candidate_ids = preferred_ids if preferred_ids else ids
+                target_id = candidate_ids[0]
+
+                def _do_cost_selection(card_id: int) -> None:
+                    try:
+                        if self._suppress_selections or self._stop_requested:
+                            return
+                        selected = self.select_hand_card(card_id, clicks=1)
+                        if not selected:
+                            selected = self.select_hand_card_offset(card_id, clicks=1, y_offset=-120)
+                        if not selected:
+                            selected = self.select_hand_card_offset(card_id, clicks=1, y_offset=-200)
+                        if not selected:
+                            bot_logger.log_error(f"PayCostsReq selection failed for id={card_id}.")
+                            return
+                        time.sleep(0.35)
+                        self.submit_selection(reason="pay_costs_selection_submit", force=True)
+                    except Exception as e:
+                        bot_logger.log_error(f"PayCostsReq selection execution failed: {e}")
+
+                threading.Timer(0.6, _do_cost_selection, args=(target_id,)).start()
+                break
+
+            if not handled_selection:
+                threading.Timer(0.6, lambda: self.submit_selection(reason="pay_costs_auto_submit", force=True)).start()
+        except Exception as e:
+            bot_logger.log_error(f"Failed to handle PayCostsReq: {e}")
+            threading.Timer(0.6, lambda: self.submit_selection(reason="pay_costs_error_fallback", force=True)).start()
+
     def __handle_select_targets_req(self, line: str) -> None:
         try:
             if self._suppress_selections or self._stop_requested:
@@ -2210,6 +2279,11 @@ class Controller(ControllerSecondary):
 
     def __handle_declare_attackers_req(self, line: str) -> None:
         try:
+            # A DeclareAttackers prompt means any prior PayCosts prompt has resolved.
+            # Clear the short blocking window to avoid stalling on combat submit.
+            if self.__pending_pay_costs_ts:
+                self.__pending_pay_costs_ts = 0.0
+                bot_logger.log_info("DeclareAttackersReq: cleared pending pay-costs pause")
             start = line.find("{")
             if start == -1:
                 return
@@ -2392,6 +2466,36 @@ class Controller(ControllerSecondary):
                 self.__decision_execution_thread.cancel()
                 self.__decision_execution_thread = None
             bot_logger.log_info("Pausing decision while pay costs prompt is active")
+            my_seat = self.__system_seat_id
+            if (
+                my_seat is not None
+                and turn_info_dict
+                and turn_info_dict.get("decisionPlayer") == my_seat
+                and self.__has_mulled_keep
+            ):
+                def _retry_after_pay_costs_pause():
+                    try:
+                        ti = self.updated_game_state.get_turn_info() or {}
+                        if self.__should_pause_for_pay_costs():
+                            self.__decision_execution_thread = threading.Timer(0.5, _retry_after_pay_costs_pause)
+                            self.__decision_execution_thread.start()
+                            return
+                        if self.__should_pause_for_targets():
+                            self.__decision_execution_thread = threading.Timer(0.5, _retry_after_pay_costs_pause)
+                            self.__decision_execution_thread.start()
+                            return
+                        if (
+                            self.__decision_callback
+                            and self.__has_mulled_keep
+                            and ti.get("decisionPlayer") == my_seat
+                        ):
+                            bot_logger.log_info("Retrying decision after pay costs pause")
+                            self.__decision_callback(self.updated_game_state)
+                    except Exception as e:
+                        bot_logger.log_error(f"Error in pay-costs pause retry: {e}")
+
+                self.__decision_execution_thread = threading.Timer(0.5, _retry_after_pay_costs_pause)
+                self.__decision_execution_thread.start()
             return
 
         if self.__should_pause_for_targets():
