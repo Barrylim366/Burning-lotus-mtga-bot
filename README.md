@@ -136,6 +136,14 @@ In main phases the bot tries to use as much available mana as possible across al
 The bot defers decisions while the game reports pending messages to avoid acting
 mid-resolution or while the UI is still busy.
 It also auto-confirms mana payment prompts when MTGA requests pay costs.
+PayCosts prompts with non-mana cost selection (for example discard-a-card while casting)
+are now handled directly via `GREMessageType_PayCostsReq` cost selection, instead of relying
+only on `SelectNReq`.
+When `GREMessageType_DeclareAttackersReq` arrives, any temporary pay-cost pause window is
+cleared immediately so combat prompts are not blocked by stale pay-cost timing.
+If the bot is paused by a PayCosts prompt and no new game-state message arrives, it now
+automatically retries the decision loop shortly after the pause window so `Next/Pass`
+does not get stuck.
 In main phases, decisions are also deferred while the stack contains objects.
 If the bot is the decision player, `pendingMessageCount` is zero, and a `Pass` action is available, it will still resolve priority even with stack objects present.
 On its own turn, the bot waits 2 seconds once per turn before starting actions like hovering, casting, or clicking.
