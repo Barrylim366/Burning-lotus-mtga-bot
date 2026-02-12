@@ -142,7 +142,7 @@ def click_image(image_path, label, confidence=0.82, timeout=20.0):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--account", default="Acc_1", help="Account folder name (Acc_1/Acc_2/Acc_3)")
+    parser.add_argument("--account", default="Account_1", help="Account folder name")
     parser.add_argument(
         "--log",
         default="C:/Users/giaco/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",

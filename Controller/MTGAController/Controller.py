@@ -36,7 +36,6 @@ class Controller(ControllerSecondary):
         click_targets=None,
         input_backend: str | None = None,
         account_switch_minutes: int | None = None,
-        credentials_path: str | None = None,
         account_cycle_index: int | None = None,
         account_play_order: list[str] | None = None,
     ):
@@ -180,7 +179,6 @@ class Controller(ControllerSecondary):
         self.__target_submit_cooldown_sec = 1.0
         self.__pending_pay_costs_ts = 0.0
         self._account_switch_interval = max(0, int(account_switch_minutes or 0)) * 60
-        self._credentials_path = credentials_path or ""
         self._account_cycle_index = int(account_cycle_index or 0)
         self._account_play_order = account_play_order or []
         if self._account_play_order:
@@ -359,51 +357,25 @@ class Controller(ControllerSecondary):
             return {"type": "creature"}
         return None
 
-    def _resolve_account_dir(self, account_index: int) -> str | None:
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        target = f"acc{account_index + 1}"
-        try:
-            for entry in os.listdir(base_dir):
-                full = os.path.join(base_dir, entry)
-                if not os.path.isdir(full):
-                    continue
-                normalized = entry.lower().replace("_", "")
-                if normalized == target:
-                    return full
-        except Exception:
-            return None
-        return None
+    def _accounts_base_dir(self) -> str:
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-    def _list_available_account_indices(self) -> list[int]:
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        found = []
-        try:
-            for entry in os.listdir(base_dir):
-                full = os.path.join(base_dir, entry)
-                if not os.path.isdir(full):
-                    continue
-                normalized = entry.lower().replace("_", "")
-                m = re.fullmatch(r"acc(\d+)", normalized)
-                if not m:
-                    continue
-                try:
-                    idx = int(m.group(1)) - 1
-                except (TypeError, ValueError):
-                    continue
-                if idx >= 0 and idx not in found:
-                    found.append(idx)
-        except Exception:
-            return []
-        found.sort()
-        return found
+    def _resolve_account_dir(self, account: dict) -> str | None:
+        folder_name = str(account.get("folder", "")).strip()
+        if not folder_name:
+            return None
+        full = os.path.join(self._accounts_base_dir(), folder_name)
+        if os.path.isdir(full):
+            return full
+        return None
 
     def _choose_deck_image(
         self,
-        account_index: int,
+        account: dict,
         target_letters: str | None,
         forced_filename: str | None = None,
     ) -> str | None:
-        account_dir = self._resolve_account_dir(account_index)
+        account_dir = self._resolve_account_dir(account)
         if not account_dir:
             bot_logger.log_error("Post-login: account folder not found.")
             return None
@@ -452,7 +424,7 @@ class Controller(ControllerSecondary):
         )
         return os.path.join(account_dir, best)
 
-    def _run_post_login_routine(self, account_index: int) -> bool:
+    def _run_post_login_routine(self, account: dict, all_accounts: list[dict]) -> bool:
         if self._stop_requested:
             return False
         quest = self._select_best_quest()
@@ -502,33 +474,34 @@ class Controller(ControllerSecondary):
             return False
         time.sleep(1.0)
 
-        # Primary attempt uses planned account index; if mismatch occurred during login,
+        # Primary attempt uses the planned account folder; if mismatch occurred during login,
         # automatically try other account folders before failing.
-        available_indices = self._list_available_account_indices()
-        candidate_indices = [account_index] + [i for i in available_indices if i != account_index]
+        candidate_accounts = [account] + [a for a in all_accounts if a is not account]
         selected_deck = None
-        selected_index = None
-        for idx in candidate_indices:
-            deck_image = self._choose_deck_image(idx, colors, forced_filename)
+        selected_account_name = None
+        planned_name = str(account.get("name", "")).strip() or str(account.get("folder", "")).strip()
+        for candidate in candidate_accounts:
+            candidate_name = str(candidate.get("name", "")).strip() or str(candidate.get("folder", "")).strip()
+            deck_image = self._choose_deck_image(candidate, colors, forced_filename)
             if not deck_image:
                 continue
             bot_logger.log_info(
-                f"Post-login: trying deck image {os.path.basename(deck_image)} from Acc_{idx + 1}."
+                f"Post-login: trying deck image {os.path.basename(deck_image)} from account '{candidate_name}'."
             )
             if self._click_image(deck_image, "POST_LOGIN_DECK"):
                 selected_deck = deck_image
-                selected_index = idx
+                selected_account_name = candidate_name
                 break
             bot_logger.log_info(
-                f"Post-login: deck image {os.path.basename(deck_image)} from Acc_{idx + 1} not found on screen."
+                f"Post-login: deck image {os.path.basename(deck_image)} from account '{candidate_name}' not found on screen."
             )
         if not selected_deck:
             bot_logger.log_error("Post-login: failed to select a deck image from any account folder.")
             return False
 
-        if selected_index is not None and selected_index != account_index:
+        if selected_account_name and planned_name and selected_account_name != planned_name:
             bot_logger.log_info(
-                f"Post-login: account mismatch detected (planned Acc_{account_index + 1}, used Acc_{selected_index + 1})."
+                f"Post-login: account mismatch detected (planned '{planned_name}', used '{selected_account_name}')."
             )
 
         time.sleep(1.0)
@@ -1451,14 +1424,14 @@ class Controller(ControllerSecondary):
                 self._account_switch_pending = False
                 return
 
-            accounts = self._load_accounts_from_credentials(self._credentials_path)
+            accounts = self._load_accounts_from_dirs()
             if not accounts:
-                bot_logger.log_error("Account switch failed: no accounts found in credentials file.")
+                bot_logger.log_error("Account switch failed: no account credentials found in account folders.")
                 self._account_switch_pending = False
                 return
             bot_logger.log_info(
-                "Accounts loaded: count={} indices={}".format(
-                    len(accounts), [a.get("index") for a in accounts]
+                "Accounts loaded: count={} names={}".format(
+                    len(accounts), [a.get("name") for a in accounts]
                 )
             )
             if self._account_play_order:
@@ -1482,19 +1455,14 @@ class Controller(ControllerSecondary):
                 bot_logger.log_info(f"Account play order (indices): {custom_order}")
                 bot_logger.log_info(f"Account play order pos (next): {self._account_cycle_index} -> {next_pos}")
             else:
-                # Default cycle order: Acc_2 -> Acc_3 -> Acc_1
-                if len(accounts) >= 3:
-                    order = [1, 2, 0]
-                    try:
-                        pos = order.index(self._account_cycle_index)
-                    except ValueError:
-                        pos = 2  # default to Acc_1 position
-                    next_index = order[(pos + 1) % len(order)]
-                else:
-                    next_index = (self._account_cycle_index + 1) % len(accounts)
+                # No explicit play order configured: cycle by sorted account list.
+                if self._account_cycle_index < 0 or self._account_cycle_index >= len(accounts):
+                    self._account_cycle_index = 0
+                next_index = self._account_cycle_index
             account = accounts[next_index]
+            account_name = str(account.get("name", "")).strip() or str(account.get("folder", "")).strip()
 
-            bot_logger.log_info(f"Switching account to Acc_{next_index + 1}")
+            bot_logger.log_info(f"Switching account to '{account_name}'")
             if custom_order:
                 next_cycle = (next_pos + 1) % len(custom_order)
                 bot_logger.log_info(f"Account cycle index (order pos): {self._account_cycle_index} -> {next_cycle}")
@@ -1560,7 +1528,7 @@ class Controller(ControllerSecondary):
                         break
                     time.sleep(0.1)
             if not self._stop_requested and not self._post_login_action_done:
-                if self._run_post_login_routine(next_index):
+                if self._run_post_login_routine(account, accounts):
                     self._post_login_action_done = True
             if not self._stop_requested and self._post_login_action_done:
                 bot_logger.log_info("Post-login routine done; waiting 5s before queueing.")
@@ -1581,7 +1549,8 @@ class Controller(ControllerSecondary):
                 # Advance to next position after a successful switch.
                 self._account_cycle_index = (next_pos + 1) % len(custom_order)
             else:
-                self._account_cycle_index = next_index
+                # Advance to next account in default sorted list.
+                self._account_cycle_index = (next_index + 1) % len(accounts)
             self._last_account_switch_ts = time.time()
             self._account_switch_pending = False
             if not queued_after_login:
@@ -1595,55 +1564,61 @@ class Controller(ControllerSecondary):
     def _resolve_account_play_order(self, accounts: list[dict]) -> list[int]:
         if not self._account_play_order:
             return []
-        account_num_to_pos = {}
+        account_name_to_pos = {}
         for pos, acc in enumerate(accounts):
-            try:
-                num = int(acc.get("index"))
-            except (TypeError, ValueError):
+            raw_name = str(acc.get("name", "")).strip()
+            if not raw_name:
                 continue
-            account_num_to_pos[num] = pos
+            account_name_to_pos[raw_name.casefold()] = pos
 
         order = []
         for raw in self._account_play_order:
-            name = str(raw).strip().lower().replace(" ", "")
+            name = str(raw).strip()
             if not name:
                 continue
-            num = None
-            m = re.search(r"acc[_-]?(\d+)", name)
-            if m:
-                try:
-                    num = int(m.group(1))
-                except ValueError:
-                    num = None
-            if num is None:
-                continue
-            pos = account_num_to_pos.get(num)
+            pos = account_name_to_pos.get(name.casefold())
             if pos is None or pos in order:
                 continue
             order.append(pos)
         return order
 
-    def _load_accounts_from_credentials(self, path: str) -> list[dict]:
-        if not path:
-            return []
-        try:
-            with open(path, "r") as f:
-                content = f.read()
-        except Exception as e:
-            bot_logger.log_error(f"Failed to read credentials file: {e}")
-            return []
-
+    def _load_accounts_from_dirs(self) -> list[dict]:
+        base_dir = self._accounts_base_dir()
         accounts = []
-        for match in re.finditer(r"Acc_(\d+)\s*=\s*{([^}]*)}", content, re.DOTALL | re.IGNORECASE):
-            idx = int(match.group(1))
-            block = match.group(2)
-            email_m = re.search(r'["\']email["\']\s*:\s*["\']([^"\']+)["\']', block, re.IGNORECASE)
-            pw_m = re.search(r'["\']pw["\']\s*:\s*["\']([^"\']+)["\']', block, re.IGNORECASE)
-            if not email_m or not pw_m:
-                continue
-            accounts.append({"index": idx, "email": email_m.group(1), "pw": pw_m.group(1)})
-
-        accounts.sort(key=lambda a: a["index"])
+        try:
+            for entry in os.listdir(base_dir):
+                full = os.path.join(base_dir, entry)
+                if not os.path.isdir(full):
+                    continue
+                creds_json = os.path.join(full, "credentials.json")
+                if not os.path.isfile(creds_json):
+                    continue
+                try:
+                    with open(creds_json, "r", encoding="utf-8") as f:
+                        payload = json.load(f)
+                except Exception as e:
+                    bot_logger.log_error(f"Failed to read account credentials from {creds_json}: {e}")
+                    continue
+                if not isinstance(payload, dict) or not payload:
+                    continue
+                first_name = next(iter(payload.keys()))
+                details = payload.get(first_name, {})
+                if not isinstance(details, dict):
+                    continue
+                email = str(details.get("email", "")).strip()
+                pw = str(details.get("pw", "")).strip()
+                if not first_name or not email or not pw:
+                    continue
+                accounts.append({
+                    "name": str(first_name).strip(),
+                    "folder": entry,
+                    "email": email,
+                    "pw": pw,
+                })
+        except Exception as e:
+            bot_logger.log_error(f"Failed to scan account folders: {e}")
+            return []
+        accounts.sort(key=lambda a: str(a.get("name", "")).casefold())
         return accounts
 
     def _persist_account_cycle_index(self) -> None:

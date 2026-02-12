@@ -40,10 +40,17 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Stop button uses a subtle red background treatment
 - Button focus outline is neutralized (no red focus ring on the last clicked button)
 - All submenu/pop-up windows now inherit the same bluish-dark UI palette via centralized submenu theming
-- Settings window size now matches main window width (`460`) and is taller (`390` height) to fit additional session info
-- Settings window opens below the main menu with roughly 5 mm vertical spacing and aligned X position
-- `X Min till Account Switch` was moved from main menu to Settings > Current session (above `Games played`, same color as stats)
-- Account switch ETA text in Settings is initialized immediately from saved config on app start (e.g. `15 Min till Account Switch`)
+- Main menu now includes a dedicated **Current Session** button between **Calibrate** and **Settings**
+- **Current Session** opens in the same submenu position logic as **Settings** (below main window, ~5 mm gap, aligned X)
+- Current session stats (`X Min till Account Switch`, `Games played`, `Win`) were moved out of **Settings** into **Current Session**
+- Settings window uses the same width (`460`) with a reduced height (`230`) focused on account/actions tools
+- **Manage Accounts** now supports up to 10 accounts with editable `Name`, `Email`, `Password` rows and dynamic play-order slots
+- Saving accounts creates/updates one folder per account in the repo and writes `credentials.json` inside that folder
+- Password input fields in **Manage Accounts** are masked (`*`) while typing
+- In **Manage Accounts**, the **Switch account (min)** save button is placed directly next to `0 = off` with a prominent blue style
+- Manage Accounts window height was increased to avoid bottom content clipping
+- Manage Accounts action buttons use compact, unified sizing; the switch-time `Save` button now matches the other button size
+- Buttons were reverted to the classic UI styling and original color direction
 - Main menu window size is fixed (width and height are both non-resizable)
 - Main menu top-left corner is fixed at screen coordinates `x=18`, `y=24`; Settings follows the main window position
 - During bot startup, the UI shows an indeterminate loading bar with the label `Loading Carddata` until initialization finishes
@@ -58,20 +65,30 @@ Standalone runnable UI example (single file): `red_lotus_ui_example.py`.
    - Required: keep_hand, queue_button, next, concede, attack_all, opponent_avatar, hand_scan_p1, hand_scan_p2, assign_damage_done
    - Logout flow uses: log_out_btn, log_out_ok_btn
 
-3) Settings:
-   - **Switch Account** opens a window for **Switch account (min)** and **Account Play Order** (use **Save Order**).
-     Saving shows a short confirmation.
+3) Current Session:
+   - Opens a session window with live stats in green text:
+     `X Min till Account Switch`, `Games played`, `Win`.
+
+4) Settings:
+   - **Manage Accounts** opens a window for:
+     - **Switch account (min)**
+     - Up to **10 accounts** (`Name`, `Email`, `Password`)
+     - **Account Play Order** (up to 10 positions)
+   - Use **Save Accounts** to create/update account folders and credentials JSONs.
+   - Use **Save Order** to persist the play order.
    - **Record Action** opens a window for **Record** (uses F8 to stop) and **Show Records**.
      Saved records include per-action timestamps (`ts`) in `recorded_actions_records.json`.
 
-4) Start Bot.
+5) Start Bot.
 
 Stop bot any time with **Mouse Wheel Down**.
 
 
 ## Account Switching
 
-- Accounts are defined in `credentials.txt` (do not commit secrets).
+- Accounts are managed via **Settings -> Manage Accounts**.
+- Each account is saved in its own folder in the repo and includes `credentials.json` in this format:
+  - `{ "<AccountName>": { "email": "...", "pw": "..." } }`
 - Switch happens when the timer expires and the bot reaches a safe screen.
 - Logout/login uses recorded action sequence + credentials injection.
 - If the client is in the Store scene during fallback logout, the bot logs the last scene and presses ESC twice to reach the options menu.
@@ -89,7 +106,7 @@ Stop bot any time with **Mouse Wheel Down**.
 After account switch the bot:
 1) clicks Play -> Find Match -> Historic Play -> My Decks (image matching)
 2) parses quests from `Player.log`
-3) selects a deck image from `Acc_1/Acc_2/Acc_3` folder that best matches quest colors
+3) selects a deck image from the switched account's folder that best matches quest colors
    - If no guild/color quest exists but a creature quest is present, it selects `C.png`
    - If no guild/color quest exists and `Quests/Quest_Fatal_Push` is active, it selects `B.png`
    - If no guild/color quest exists and `Quests/Quest_Raiding_Party` is active, it selects `C.png`
@@ -99,9 +116,8 @@ After account switch the bot:
 Deck images are matched by filename letters (e.g. `RG.png`, `WU.png`, `R.png`).
 Creature quests use `C.png`.
 If the planned account deck image is not found after login, the bot retries deck selection
-across available `Acc_*` folders and logs account/deck mismatches in `bot.log`.
-The `Acc_1`, `Acc_2`, `Acc_3` and `Buttons` folders are kept in Git, but their
-contents are ignored (see .gitignore). Keep your local images there.
+across other configured account folders and logs account/deck mismatches in `bot.log`.
+`Buttons` is kept in Git, but its contents are ignored (see `.gitignore`). Keep your local images there.
 
 ## Casting Logic
 
