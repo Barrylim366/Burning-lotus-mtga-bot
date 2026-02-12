@@ -710,6 +710,11 @@ class ConfigManager:
     def _repo_root(self) -> str:
         return os.path.abspath(os.path.dirname(__file__))
 
+    def _accounts_root(self) -> str:
+        root = os.path.join(self._repo_root(), "Accounts")
+        os.makedirs(root, exist_ok=True)
+        return root
+
     def _sanitize_folder_name(self, name: str) -> str:
         cleaned = []
         for ch in (name or "").strip():
@@ -790,7 +795,7 @@ class ConfigManager:
                 folder = self._next_unique_folder_name(desired, used_folders)
             used_folders.add(folder)
 
-            folder_path = os.path.join(self._repo_root(), folder)
+            folder_path = os.path.join(self._accounts_root(), folder)
             os.makedirs(folder_path, exist_ok=True)
             creds_path = os.path.join(folder_path, "credentials.json")
             with open(creds_path, "w", encoding="utf-8") as f:
