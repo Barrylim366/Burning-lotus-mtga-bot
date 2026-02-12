@@ -746,8 +746,10 @@ class MTGBotUI(tk.Tk):
         super().__init__()
 
         self.title("Red Lotus Bot")
-        self.geometry("460x780")
-        self.resizable(False, True)
+        width, height = 460, 780
+        x, y = 18, 24
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.resizable(False, False)
 
         self.config_manager = ConfigManager()
         self.bot_running = False
@@ -757,6 +759,7 @@ class MTGBotUI(tk.Tk):
         self.session_wins = 0
         self.settings_window = None
         self._controller = None
+        self._switch_eta_text = self._get_configured_switch_eta_text()
 
         self.ui_theme = self._build_ui_theme()
         self.configure(bg=self.ui_theme["colors"]["bg"])
@@ -1015,8 +1018,6 @@ class MTGBotUI(tk.Tk):
             bd=0,
         )
         self.status_pill.pack()
-        self.switch_eta_label = ttk.Label(status_frame, text="", style="ETA.TLabel", anchor="center")
-        self.switch_eta_label.pack(fill=tk.X, pady=(sp["xs"], 0))
 
         self._card_canvas.bind("<Configure>", lambda _e: self._refresh_card_layout())
         self.after(0, self._refresh_card_layout)
@@ -1071,7 +1072,6 @@ class MTGBotUI(tk.Tk):
                 bg=c["surface"],
                 fg=c["pill_running_text"],
             )
-            self.switch_eta_label.configure(text="0 Min till Account Switch (off)", foreground=c["text_muted"])
             return
 
         self.start_btn.state(["!disabled"])
@@ -1082,7 +1082,17 @@ class MTGBotUI(tk.Tk):
             bg=c["surface"],
             fg=c["status_stopped_text"],
         )
-        self.switch_eta_label.configure(text="", foreground=c["text_muted"])
+        self._switch_eta_text = self._get_configured_switch_eta_text()
+
+    def _get_configured_switch_eta_text(self) -> str:
+        minutes = 0
+        try:
+            minutes = int(self.config_manager.get_account_switch_minutes())
+        except Exception:
+            minutes = 0
+        if minutes <= 0:
+            return "Account switch: off"
+        return f"{minutes} Min till Account Switch"
 
     def _set_startup_loading(self, loading: bool):
         if not hasattr(self, "loading_frame"):
@@ -1180,10 +1190,11 @@ class MTGBotUI(tk.Tk):
             self.settings_window.focus_force()
             return
         self.settings_window = SettingsWindow(self, self.config_manager, self.session_games, self.session_wins)
+        self.settings_window.update_stats(self.session_games, self.session_wins, self._switch_eta_text)
 
     def _update_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
-            self.settings_window.update_stats(self.session_games, self.session_wins)
+            self.settings_window.update_stats(self.session_games, self.session_wins, self._switch_eta_text)
 
     def _update_switch_eta(self):
         if not self.bot_running:
@@ -1198,9 +1209,10 @@ class MTGBotUI(tk.Tk):
         except Exception:
             minutes = 0
         if interval_minutes <= 0:
-            self.switch_eta_label.config(text="0 Min till Account Switch (off)")
+            self._switch_eta_text = "Account switch: off"
         else:
-            self.switch_eta_label.config(text=f"{minutes} Min till Account Switch")
+            self._switch_eta_text = f"{minutes} Min till Account Switch"
+        self._update_settings_window()
         self.after(10000, self._update_switch_eta)
 
 
@@ -1208,7 +1220,14 @@ class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, config_manager: ConfigManager, games: int, wins: int):
         super().__init__(parent)
         self.title("Settings")
-        self.geometry("460x340")
+        width, height = 460, 390
+        gap_px = int(parent.winfo_fpixels("5m"))  # ~5 mm
+        parent.update_idletasks()
+        x = parent.winfo_x()
+        y = parent.winfo_rooty() + parent.winfo_height() + gap_px
+        max_y = max(0, self.winfo_screenheight() - height)
+        y = min(y, max_y)
+        self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
         self.configure(bg="#2b2b2b")
         self._log_window = None
@@ -1257,6 +1276,9 @@ class SettingsWindow(tk.Toplevel):
 
         stats_frame = tk.Frame(frame, bg="#2b2b2b")
         stats_frame.pack(fill=tk.X)
+
+        self.switch_eta_label = tk.Label(stats_frame, text="", bg="#2b2b2b", fg="#00ff00", font=("Consolas", 12))
+        self.switch_eta_label.pack(anchor="w", pady=4)
 
         self.games_label = tk.Label(stats_frame, text="", bg="#2b2b2b", fg="#00ff00", font=("Consolas", 12))
         self.games_label.pack(anchor="w", pady=4)
@@ -1335,10 +1357,12 @@ class SettingsWindow(tk.Toplevel):
         )
         back_btn.pack(anchor="w", pady=(12, 0))
 
-        self.update_stats(games, wins)
+        self.update_stats(games, wins, "Account switch: off")
         _apply_submenu_theme(self)
 
-    def update_stats(self, games: int, wins: int):
+    def update_stats(self, games: int, wins: int, switch_eta_text: str | None = None):
+        if switch_eta_text is not None:
+            self.switch_eta_label.config(text=switch_eta_text)
         self.games_label.config(text=f"Games played: {games}")
         self.wins_label.config(text=f"Win: {wins}")
 

@@ -374,6 +374,29 @@ class Controller(ControllerSecondary):
             return None
         return None
 
+    def _list_available_account_indices(self) -> list[int]:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        found = []
+        try:
+            for entry in os.listdir(base_dir):
+                full = os.path.join(base_dir, entry)
+                if not os.path.isdir(full):
+                    continue
+                normalized = entry.lower().replace("_", "")
+                m = re.fullmatch(r"acc(\d+)", normalized)
+                if not m:
+                    continue
+                try:
+                    idx = int(m.group(1)) - 1
+                except (TypeError, ValueError):
+                    continue
+                if idx >= 0 and idx not in found:
+                    found.append(idx)
+        except Exception:
+            return []
+        found.sort()
+        return found
+
     def _choose_deck_image(
         self,
         account_index: int,
@@ -459,10 +482,6 @@ class Controller(ControllerSecondary):
             colors = ""
             bot_logger.log_info("Post-login: no guild quests found; using fallback deck.")
 
-        deck_image = self._choose_deck_image(account_index, colors, forced_filename)
-        if not deck_image:
-            return False
-
         buttons_dir = self._buttons_dir()
         play_btn = os.path.join(buttons_dir, "play_btn.png")
         find_btn = os.path.join(buttons_dir, "find_match_btn.png")
@@ -483,14 +502,40 @@ class Controller(ControllerSecondary):
             return False
         time.sleep(1.0)
 
-        bot_logger.log_info(f"Post-login: selecting deck image {os.path.basename(deck_image)}.")
-        if not self._click_image(deck_image, "POST_LOGIN_DECK"):
+        # Primary attempt uses planned account index; if mismatch occurred during login,
+        # automatically try other account folders before failing.
+        available_indices = self._list_available_account_indices()
+        candidate_indices = [account_index] + [i for i in available_indices if i != account_index]
+        selected_deck = None
+        selected_index = None
+        for idx in candidate_indices:
+            deck_image = self._choose_deck_image(idx, colors, forced_filename)
+            if not deck_image:
+                continue
+            bot_logger.log_info(
+                f"Post-login: trying deck image {os.path.basename(deck_image)} from Acc_{idx + 1}."
+            )
+            if self._click_image(deck_image, "POST_LOGIN_DECK"):
+                selected_deck = deck_image
+                selected_index = idx
+                break
+            bot_logger.log_info(
+                f"Post-login: deck image {os.path.basename(deck_image)} from Acc_{idx + 1} not found on screen."
+            )
+        if not selected_deck:
+            bot_logger.log_error("Post-login: failed to select a deck image from any account folder.")
             return False
+
+        if selected_index is not None and selected_index != account_index:
+            bot_logger.log_info(
+                f"Post-login: account mismatch detected (planned Acc_{account_index + 1}, used Acc_{selected_index + 1})."
+            )
+
         time.sleep(1.0)
         if not self._click_image(play_btn, "POST_LOGIN_PLAY_CONFIRM"):
             return False
 
-        bot_logger.log_info("Post-login: deck selected and play clicked.")
+        bot_logger.log_info(f"Post-login: deck selected ({os.path.basename(selected_deck)}) and play clicked.")
         return True
 
     def start_game_from_home_screen(self):
