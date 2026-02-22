@@ -4,7 +4,7 @@ Automated MTGA bot with UI, calibration, account switching, and quest-based deck
 
 ## Requirements
 
-- Windows 10/11
+- macOS 12+ or Windows 10/11
 - Python 3.10+
 - MTG Arena installed (Steam)
 - Python packages:
@@ -13,6 +13,15 @@ Automated MTGA bot with UI, calibration, account switching, and quest-based deck
   - pillow
   - pynput
   - cryptography (Ed25519 license verification)
+
+Input backend:
+- Default is `auto`.
+- On macOS, `auto` prefers `pyautogui` (more stable than global `pynput` hooks).
+- Optional override via env: `MTGA_BOT_INPUT_BACKEND=auto|pyautogui|pynput|ydotool`.
+- On macOS you must allow input control:
+  - `System Settings -> Privacy & Security -> Accessibility`:
+    enable your terminal app (Terminal/iTerm) and the Python executable used for the bot.
+  - If image matching is used, also enable `Screen Recording` for the same app(s).
 
 Install packages:
 
@@ -28,6 +37,14 @@ pip install pyautogui opencv-python pillow pynput cryptography
 python ui.py
 ```
 
+macOS one-click start:
+
+```
+./start_ui.command
+```
+
+You can also double-click `start_ui.command` in Finder.
+
 UI assets are loaded from `images/`:
 - `images/ui_symbol.png`
 - `images/background`
@@ -35,6 +52,7 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Start page uses a full-canvas background image loaded from `images/background`
 - Single accent color (`#C8141E`)
 - System-first font stack (`Segoe UI Variable`/`Segoe UI`/`Inter`/`Arial`)
+- UI scale is calculated automatically on each startup based on current screen resolution and applied to the main window and subwindows.
 - Compact hierarchy: centered logo, title, and uniform button grid
 - Main window/start title now reads `Burning Lotus`
 - Main menu buttons are canvas-rendered (no ttk widget box) with rounded edges, subtle inner shadow, stronger visibility (rim/shadow/glow), and fixed body color `#3D130E` slightly more transparent
@@ -114,7 +132,8 @@ Standalone runnable UI example (single file): `burning_lotus_ui_example.py`.
 
 
 2) Calibrate buttons via **Calibrate**:
-   - Calibration uses `pynput` (the optional `Capture (slurp)` button was removed).
+   - Windows/Linux: calibration uses `pynput`.
+   - macOS: calibration uses stable polling mode (no global `pynput` hook) with `Enter` to save and `Esc` to cancel.
    - Required: keep_hand, queue_button, next, concede, attack_all, opponent_avatar, hand_scan_p1, hand_scan_p2, assign_damage_done
    - Logout flow uses: log_out_btn, log_out_ok_btn
 
@@ -131,6 +150,13 @@ Standalone runnable UI example (single file): `burning_lotus_ui_example.py`.
    - Use **Save Order** to persist the play order.
    - **Record Action** opens a window for **Record** (uses F8 to stop) and **Show Records**.
      Saved records include per-action timestamps (`ts`) in `recorded_actions_records.json`.
+  - Includes a **User Interface** button between **Record Action** and **Back**.
+  - **User Interface** opens a settings window with:
+    - `UI Scale` slider (50%..120%)
+    - `UI-Fenster im Vordergrund` toggle
+    - both options styled in one highlighted yellow framed card (matching Current Session style)
+  - On `Save`, UI scale is applied immediately in-app (no restart required).
+  - Subwindow minimum sizes are now derived from actual visible content bounds to avoid clipping without forcing oversized windows.
 
 5) Open **License**, copy your **Device ID**, import/paste your signed `.bllic`, then click **Aktivieren**.
 
@@ -146,6 +172,7 @@ Stop bot any time with **Mouse Wheel Down**.
   - Local Device ID (copy button)
   - License paste box
   - `Import license file` + `Activate`
+  - `Emergency code` + `Activate emergency`
 - License check runs on app startup and again before bot start.
 - Without a valid license, **Start Bot** remains disabled and the UI shows a hint.
 
@@ -161,6 +188,18 @@ Stored license path (per user):
 - Windows: `%APPDATA%/BurningLotusBot/license.bllic`
 - Linux: `~/.config/burninglotusbot/license.bllic`
 - macOS: `~/Library/Application Support/BurningLotusBot/license.bllic`
+
+Emergency override:
+- The UI can activate a temporary emergency override code.
+- Default emergency code: `BLB-NOTFALL-2026`
+- Default validity: 3 days (configurable via env `BLB_EMERGENCY_CODE_DAYS`, range 1..30)
+- Override code sources:
+  - `BLB_EMERGENCY_CODE` (plain text)
+  - `BLB_EMERGENCY_CODE_SHA256` (hash)
+- Stored at:
+  - Windows: `%APPDATA%/BurningLotusBot/emergency_override.json`
+  - Linux: `~/.config/burninglotusbot/emergency_override.json`
+  - macOS: `~/Library/Application Support/BurningLotusBot/emergency_override.json`
 
 Validation checks:
 - Ed25519 signature valid
@@ -325,7 +364,7 @@ Timer transitions are logged as:
 
 On startup:
 - MTGA card DB export refreshes `cards.json` if the local MTGA data changed.
-- Raw card-data discovery supports common Linux Steam paths and Windows Steam install paths.
+- Raw card-data discovery supports common Linux Steam paths, macOS Steam install paths, and Windows Steam install paths.
 - Scryfall bulk delta check fetches new Arena IDs and merges missing cards.
 If `cards.json` is missing on first run, it will be generated automatically.
 
@@ -347,8 +386,9 @@ python -m unittest tests/test_licensing.py
 - `bot.log` - main bot debug
 - `human.log` - high-level actions
 - `bot_gui_subprocess.log` - UI subprocess log (if used)
-- `Player.log` default path: `C:/Users/<YourUser>/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`
+- `Player.log` default path (auto-detected):
+  - macOS: `~/Library/Logs/Wizards Of The Coast/MTGA/Player.log`
+  - Windows: `C:/Users/<YourUser>/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`
+  - Linux/Proton: `~/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`
 - Hover logs are suppressed by default and only enabled during selection scans.
 - A one-line match summary is logged at match completion.
-
-

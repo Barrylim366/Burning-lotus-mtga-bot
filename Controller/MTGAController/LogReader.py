@@ -2,6 +2,7 @@ import threading
 import time
 from collections import deque
 import os
+import sys
 import bot_logger
 
 
@@ -16,6 +17,15 @@ class LogReader:
                 home,
                 "AppData",
                 "LocalLow",
+                "Wizards Of The Coast",
+                "MTGA",
+                "Player.log",
+            )
+        if sys.platform == "darwin":
+            return os.path.join(
+                home,
+                "Library",
+                "Logs",
                 "Wizards Of The Coast",
                 "MTGA",
                 "Player.log",

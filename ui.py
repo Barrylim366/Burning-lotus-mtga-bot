@@ -29,6 +29,15 @@ def _default_player_log_path() -> str:
             "MTGA",
             "Player.log",
         )
+    if sys.platform == "darwin":
+        return os.path.join(
+            home,
+            "Library",
+            "Logs",
+            "Wizards Of The Coast",
+            "MTGA",
+            "Player.log",
+        )
     return os.path.join(
         home,
         ".local",
@@ -86,6 +95,86 @@ def _image_path(filename: str) -> str:
         if os.path.exists(candidate):
             return candidate
     return candidates[0]
+
+
+def _get_ui_topmost_setting_from_widget(widget) -> bool:
+    cur = widget
+    while cur is not None:
+        cfg = getattr(cur, "config_manager", None)
+        if cfg is not None and hasattr(cfg, "get_ui_windows_topmost"):
+            try:
+                return bool(cfg.get_ui_windows_topmost())
+            except Exception:
+                return False
+        cur = getattr(cur, "master", None)
+    return False
+
+
+def _apply_window_topmost(window, enabled: bool) -> None:
+    try:
+        window.attributes("-topmost", bool(enabled))
+    except Exception:
+        pass
+
+
+def _fit_window_to_canvas_content(
+    window,
+    canvas: tk.Canvas,
+    *,
+    exclude_items: set[int] | None = None,
+    pad_x: int = 20,
+    pad_y: int = 20,
+    floor_w: int = 240,
+    floor_h: int = 180,
+) -> None:
+    try:
+        window.update_idletasks()
+        ids = canvas.find_all()
+        if not ids:
+            return
+        excluded = exclude_items or set()
+        x1 = y1 = x2 = y2 = None
+        for item_id in ids:
+            if item_id in excluded:
+                continue
+            bbox = canvas.bbox(item_id)
+            if not bbox:
+                continue
+            bx1, by1, bx2, by2 = bbox
+            x1 = bx1 if x1 is None else min(x1, bx1)
+            y1 = by1 if y1 is None else min(y1, by1)
+            x2 = bx2 if x2 is None else max(x2, bx2)
+            y2 = by2 if y2 is None else max(y2, by2)
+        if x1 is None or y1 is None or x2 is None or y2 is None:
+            return
+        req_w = max(int(floor_w), int(x2 + pad_x))
+        req_h = max(int(floor_h), int(y2 + pad_y))
+        window.minsize(req_w, req_h)
+        cur_w = int(window.winfo_width())
+        cur_h = int(window.winfo_height())
+        if cur_w < req_w or cur_h < req_h:
+            x = int(window.winfo_x())
+            y = int(window.winfo_y())
+            new_w = max(cur_w, req_w)
+            new_h = max(cur_h, req_h)
+            max_x = max(0, int(window.winfo_screenwidth()) - new_w)
+            max_y = max(0, int(window.winfo_screenheight()) - new_h)
+            x = min(max(0, x), max_x)
+            y = min(max(0, y), max_y)
+            window.geometry(f"{new_w}x{new_h}+{x}+{y}")
+    except Exception:
+        pass
+
+
+def _get_ui_scale_from_widget(widget) -> float:
+    cur = widget
+    while cur is not None:
+        scale = getattr(cur, "_ui_scale", None)
+        if isinstance(scale, (int, float)) and scale > 0:
+            # Keep subwindows aligned with global UI scaling.
+            return max(0.50, float(scale))
+        cur = getattr(cur, "master", None)
+    return 1.0
 
 
 def _submenu_palette():
@@ -298,8 +387,9 @@ class CalibrationWindow(tk.Toplevel):
         super().__init__(parent)
         self.parent = parent
         self.config_manager = config_manager
+        self._ui_scale = _get_ui_scale_from_widget(parent)
         self.title("Calibrate")
-        width, height = 640, 520
+        width, height = self._s(640), self._s(520)
         gap_px = int(parent.winfo_fpixels("4m"))  # ~0.4 cm
         parent.update_idletasks()
         x = parent.winfo_x() + parent.winfo_width() + gap_px
@@ -311,11 +401,14 @@ class CalibrationWindow(tk.Toplevel):
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
         self.configure(bg="#0F1115")
+        _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
 
         self.is_calibrating = False
         self.mouse_listener = None
         self.keyboard_listener = None
         self._pynput = None
+        self._calibration_mode = "none"  # "pynput" | "poll"
+        self._calibration_poll_job = None
         self.current_x = 0
         self.current_y = 0
         self._theme = {
@@ -359,6 +452,10 @@ class CalibrationWindow(tk.Toplevel):
         self.after(30, self._refresh_scene)
         self.after(120, self._refresh_scene)
         self._update_calibration_capabilities()
+        self.after(180, self._apply_content_minsize)
+
+    def _s(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
 
     def _load_background_image(self):
         self._bg_source_image = None
@@ -385,6 +482,18 @@ class CalibrationWindow(tk.Toplevel):
     def _refresh_scene(self):
         self._refresh_background()
         self._layout_scene()
+        self._apply_content_minsize()
+
+    def _apply_content_minsize(self):
+        _fit_window_to_canvas_content(
+            self,
+            self._canvas,
+            exclude_items={self._bg_canvas_item} if self._bg_canvas_item else None,
+            pad_x=self._s(24),
+            pad_y=self._s(24),
+            floor_w=self._s(420),
+            floor_h=self._s(340),
+        )
 
     def _refresh_background(self):
         if self._bg_source_image is None:
@@ -415,24 +524,42 @@ class CalibrationWindow(tk.Toplevel):
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure(
-            "CalibrateFire.TCombobox",
-            fieldbackground=c["panel_alt"],
-            background=c["panel_alt"],
-            foreground=c["text"],
-            bordercolor=c["border"],
-            lightcolor=c["border"],
-            darkcolor=c["border"],
-            arrowcolor=c["text"],
-            borderwidth=1,
-            padding=4,
-        )
-        style.map(
-            "CalibrateFire.TCombobox",
-            fieldbackground=[("readonly", "#341616")],
-            background=[("readonly", "#341616")],
-            foreground=[("readonly", c["text"])],
-        )
+        try:
+            style.configure(
+                "CalibrateFire.TCombobox",
+                fieldbackground=c["panel_alt"],
+                background=c["panel_alt"],
+                foreground=c["text"],
+                bordercolor=c["border"],
+                lightcolor=c["border"],
+                darkcolor=c["border"],
+                arrowcolor=c["text"],
+                borderwidth=1,
+                padding=4,
+            )
+            style.map(
+                "CalibrateFire.TCombobox",
+                fieldbackground=[("readonly", "#341616")],
+                background=[("readonly", "#341616")],
+                foreground=[("readonly", c["text"])],
+            )
+        except Exception:
+            # Fallback for Tk builds that do not accept extended combobox style keys.
+            try:
+                style.configure(
+                    "CalibrateFire.TCombobox",
+                    fieldbackground=c["panel_alt"],
+                    background=c["panel_alt"],
+                    foreground=c["text"],
+                )
+                style.map(
+                    "CalibrateFire.TCombobox",
+                    fieldbackground=[("readonly", "#341616")],
+                    background=[("readonly", "#341616")],
+                    foreground=[("readonly", c["text"])],
+                )
+            except Exception:
+                pass
 
     def _resolve_button_skins(self, style_name: str, body_width: int | None = None, body_height: int | None = None):
         parent_ui = getattr(self, "master", None)
@@ -617,16 +744,17 @@ class CalibrationWindow(tk.Toplevel):
     def _layout_scene(self):
         if not self._canvas or not self._canvas.winfo_exists():
             return
+        s = self._s
         cw = max(2, int(self._canvas.winfo_width()))
         self._canvas.coords(self._title_item, cw // 2, 26)
 
-        row1_y = 108
-        row2_y = 324
-        label_x = 42
-        dropdown_x = 170
+        row1_y = s(108)
+        row2_y = s(324)
+        label_x = s(42)
+        dropdown_x = s(170)
         dropdown_w = int(self.dropdown.winfo_width()) if self.dropdown.winfo_width() > 10 else int(self.dropdown.winfo_reqwidth())
         test_dropdown_w = int(self.test_dropdown.winfo_width()) if self.test_dropdown.winfo_width() > 10 else int(self.test_dropdown.winfo_reqwidth())
-        btn_gap = 12
+        btn_gap = s(12)
 
         self._canvas.coords(self._select_label_item, label_x, row1_y + 18)
         self._canvas.coords(self._dropdown_window, dropdown_x, row1_y)
@@ -637,11 +765,11 @@ class CalibrationWindow(tk.Toplevel):
             self._canvas.coords(cal_btn["bg_item"], cal_x, row1_y)
             self._canvas.coords(cal_btn["text_item"], cal_x + cal_btn["width"] // 2, row1_y + cal_btn["height"] // 2 - 2)
 
-        self._canvas.coords(self._x_label_item, 62, 194)
-        self._canvas.coords(self._x_value_item, 108, 194)
-        self._canvas.coords(self._y_label_item, 62, 236)
-        self._canvas.coords(self._y_value_item, 108, 236)
-        self._canvas.coords(self._instruction_item, cw // 2, 280)
+        self._canvas.coords(self._x_label_item, s(62), s(194))
+        self._canvas.coords(self._x_value_item, s(108), s(194))
+        self._canvas.coords(self._y_label_item, s(62), s(236))
+        self._canvas.coords(self._y_value_item, s(108), s(236))
+        self._canvas.coords(self._instruction_item, cw // 2, s(280))
 
         self._canvas.coords(self._test_label_item, label_x, row2_y + 18)
         self._canvas.coords(self._test_dropdown_window, dropdown_x, row2_y)
@@ -655,17 +783,17 @@ class CalibrationWindow(tk.Toplevel):
         save_btn = self._canvas_buttons.get("saved")
         back_btn = self._canvas_buttons.get("back")
         if save_btn:
-            action_y = 404
+            action_y = s(404)
             if back_btn:
-                total_w = save_btn["width"] + back_btn["width"] + 14
-                start_x = max(14, (cw - total_w) // 2)
+                total_w = save_btn["width"] + back_btn["width"] + s(14)
+                start_x = max(s(14), (cw - total_w) // 2)
                 self._canvas.coords(save_btn["bg_item"], start_x, action_y)
                 self._canvas.coords(
                     save_btn["text_item"],
                     start_x + save_btn["width"] // 2,
                     action_y + save_btn["height"] // 2 - 2,
                 )
-                back_x = start_x + save_btn["width"] + 14
+                back_x = start_x + save_btn["width"] + s(14)
                 self._canvas.coords(back_btn["bg_item"], back_x, action_y)
                 self._canvas.coords(
                     back_btn["text_item"],
@@ -673,7 +801,7 @@ class CalibrationWindow(tk.Toplevel):
                     action_y + back_btn["height"] // 2 - 2,
                 )
             else:
-                save_x = max(14, (cw - save_btn["width"]) // 2)
+                save_x = max(s(14), (cw - save_btn["width"]) // 2)
                 self._canvas.coords(save_btn["bg_item"], save_x, action_y)
                 self._canvas.coords(
                     save_btn["text_item"],
@@ -786,7 +914,13 @@ class CalibrationWindow(tk.Toplevel):
 
     def _update_calibration_capabilities(self):
         c = self._theme
-        # Global calibration requires pynput.
+        # On macOS, use polling fallback by default for stability with Tk windows.
+        if sys.platform == "darwin":
+            self._set_canvas_button_enabled(self._calibrate_button_name, True)
+            self._set_instruction("Calibration ready (macOS polling mode).", c["ok"])
+            return
+
+        # On non-macOS platforms, prefer global pynput listeners.
         can_use_pynput = True
         try:
             import pynput  # noqa: F401
@@ -794,8 +928,8 @@ class CalibrationWindow(tk.Toplevel):
             can_use_pynput = False
 
         if not can_use_pynput:
-            self._set_canvas_button_enabled(self._calibrate_button_name, False)
-            self._set_instruction("Calibration requires 'pynput'. Please install it.", c["error"])
+            self._set_canvas_button_enabled(self._calibrate_button_name, True)
+            self._set_instruction("pynput unavailable: using local polling mode.", c["warn"])
         else:
             self._set_canvas_button_enabled(self._calibrate_button_name, True)
 
@@ -818,7 +952,12 @@ class CalibrationWindow(tk.Toplevel):
         self.is_calibrating = True
         self._set_canvas_button_text(self._calibrate_button_name, "Stop")
         self._set_canvas_button_style(self._calibrate_button_name, "Destructive.TButton")
-        self._set_instruction("Move mouse to target. Press ENTER to save.", c["warn"])
+        self._set_instruction("Move mouse to target. Press ENTER to save (ESC to cancel).", c["warn"])
+
+        # macOS: avoid pynput global hooks due known instability with Tk integration.
+        if sys.platform == "darwin":
+            self._start_poll_calibration()
+            return
 
         try:
             if self._pynput is None:
@@ -826,13 +965,43 @@ class CalibrationWindow(tk.Toplevel):
                 self._pynput = (mouse, keyboard)
 
             mouse, keyboard = self._pynput
+            self._calibration_mode = "pynput"
             self.mouse_listener = mouse.Listener(on_move=self._on_mouse_move)
             self.mouse_listener.start()
             self.keyboard_listener = keyboard.Listener(on_press=self._on_key_press)
             self.keyboard_listener.start()
         except Exception as e:
             self._stop_calibration()
-            self._set_instruction("Live tracking is unavailable.", c["warn"])
+            self._set_instruction(f"Live tracking unavailable: {e}. Using polling mode.", c["warn"])
+            self.is_calibrating = True
+            self._set_canvas_button_text(self._calibrate_button_name, "Stop")
+            self._set_canvas_button_style(self._calibrate_button_name, "Destructive.TButton")
+            self._start_poll_calibration()
+
+    def _start_poll_calibration(self):
+        self._calibration_mode = "poll"
+        self.bind("<Return>", self._on_local_calibration_enter)
+        self.bind("<Escape>", self._on_local_calibration_escape)
+        self._poll_calibration_pointer()
+
+    def _poll_calibration_pointer(self):
+        if not self.is_calibrating or self._calibration_mode != "poll":
+            return
+        try:
+            self.current_x = int(self.winfo_pointerx())
+            self.current_y = int(self.winfo_pointery())
+            self._update_coordinates()
+        except Exception:
+            pass
+        self._calibration_poll_job = self.after(40, self._poll_calibration_pointer)
+
+    def _on_local_calibration_enter(self, _event=None):
+        if self.is_calibrating:
+            self._save_coordinates()
+
+    def _on_local_calibration_escape(self, _event=None):
+        if self.is_calibrating:
+            self._stop_calibration()
 
     def _stop_calibration(self):
         c = self._theme
@@ -840,23 +1009,48 @@ class CalibrationWindow(tk.Toplevel):
         self._set_canvas_button_text(self._calibrate_button_name, "Calibrate")
         self._set_canvas_button_style(self._calibrate_button_name, "Secondary.TButton")
         self._set_instruction("Select a button and click 'Calibrate'", c["text_muted"])
+        self._calibration_mode = "none"
+
+        if self._calibration_poll_job is not None:
+            try:
+                self.after_cancel(self._calibration_poll_job)
+            except Exception:
+                pass
+            self._calibration_poll_job = None
+        try:
+            self.unbind("<Return>")
+            self.unbind("<Escape>")
+        except Exception:
+            pass
 
         if self.mouse_listener:
-            self.mouse_listener.stop()
+            try:
+                self.mouse_listener.stop()
+            except Exception:
+                pass
             self.mouse_listener = None
         if self.keyboard_listener:
-            self.keyboard_listener.stop()
+            try:
+                self.keyboard_listener.stop()
+            except Exception:
+                pass
             self.keyboard_listener = None
 
     def _on_mouse_move(self, x, y):
         self.current_x = x
         self.current_y = y
         # Update UI in main thread
-        self.after(0, self._update_coordinates)
+        try:
+            self.after(0, self._update_coordinates)
+        except Exception:
+            pass
 
     def _update_coordinates(self):
-        self._canvas.itemconfigure(self._x_value_item, text=str(self.current_x))
-        self._canvas.itemconfigure(self._y_value_item, text=str(self.current_y))
+        try:
+            self._canvas.itemconfigure(self._x_value_item, text=str(self.current_x))
+            self._canvas.itemconfigure(self._y_value_item, text=str(self.current_y))
+        except Exception:
+            pass
 
     def _on_key_press(self, key):
         if self._pynput is None:
@@ -864,6 +1058,8 @@ class CalibrationWindow(tk.Toplevel):
         _, keyboard = self._pynput
         if key == keyboard.Key.enter and self.is_calibrating:
             self._save_coordinates()
+        elif key == keyboard.Key.esc and self.is_calibrating:
+            self._stop_calibration()
 
     def _save_coordinates(self):
         c = self._theme
@@ -909,14 +1105,19 @@ class SavedButtonsWindow(tk.Toplevel):
 
     def __init__(self, parent, config_manager):
         super().__init__(parent)
+        self._ui_scale = _get_ui_scale_from_widget(parent)
         self.config_manager = config_manager
         self.title("Saved Buttons")
-        self.geometry("380x500")
+        self.geometry(f"{self._s(380)}x{self._s(500)}")
         self.resizable(False, False)
         self.configure(bg="#2b2b2b")
+        _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
 
         self._setup_ui()
         _apply_submenu_theme(self)
+
+    def _s(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
 
     def _setup_ui(self):
         # Main frame
@@ -1036,6 +1237,15 @@ class ConfigManager:
                 if os.path.isfile(full):
                     candidates.append(full)
 
+        if sys.platform == "darwin":
+            mac_candidates = [
+                os.path.join(home, "Library", "Logs", "Wizards Of The Coast", "MTGA", "Player.log"),
+                os.path.join(home, "Library", "Logs", "Wizards Of The Coast", "MTGA", "Player-prev.log"),
+            ]
+            for full in mac_candidates:
+                if os.path.isfile(full):
+                    candidates.append(full)
+
         steam_bases = [
             os.path.join(home, ".local", "share", "Steam"),
             os.path.join(home, ".steam", "steam"),
@@ -1075,7 +1285,9 @@ class ConfigManager:
         return {
             "log_path": detected_log or _default_player_log_path(),
             "screen_bounds": [[0, 0], [2560, 1440]],
-            "input_backend": "pynput",
+            "input_backend": "auto",
+            "ui_windows_topmost": False,
+            "ui_scale_percent": 100,
             "account_switch_minutes": 0,
             "managed_accounts": [],
             "account_cycle_index": 0,
@@ -1106,6 +1318,11 @@ class ConfigManager:
                     _merge(target[key], value)
 
         _merge(config, defaults)
+        # Auto-heal stale log paths (e.g., copied config from another OS/user profile).
+        detected_log = self._detect_player_log_path()
+        current_log = str(config.get("log_path", "") or "").strip()
+        if detected_log and (not current_log or not os.path.isfile(current_log)):
+            config["log_path"] = detected_log
         # Remove deprecated click targets if present
         try:
             click_targets = config.get("click_targets", {})
@@ -1166,6 +1383,28 @@ class ConfigManager:
             return int(self.config.get("account_switch_minutes", 0))
         except (TypeError, ValueError):
             return 0
+
+    def get_ui_windows_topmost(self) -> bool:
+        return bool(self.config.get("ui_windows_topmost", False))
+
+    def set_ui_windows_topmost(self, enabled: bool) -> None:
+        self.config["ui_windows_topmost"] = bool(enabled)
+        self._save_config()
+
+    def get_ui_scale_percent(self) -> int:
+        try:
+            value = int(self.config.get("ui_scale_percent", 100))
+        except (TypeError, ValueError):
+            value = 100
+        return max(75, min(120, value))
+
+    def set_ui_scale_percent(self, percent: int) -> None:
+        try:
+            value = int(percent)
+        except (TypeError, ValueError):
+            return
+        self.config["ui_scale_percent"] = max(75, min(120, value))
+        self._save_config()
 
     def set_account_switch_minutes(self, minutes: int) -> None:
         try:
@@ -1338,20 +1577,22 @@ class MTGBotUI(tk.Tk):
     def __init__(self):
         super().__init__()
 
+        self.config_manager = ConfigManager()
         self.title("Burning Lotus")
         self._suppress_tk_default_icon()
-        width, height = 460, 780
+        self._ui_scale = self._compute_ui_scale()
+        width, height = self._scale_value(460), self._scale_value(780)
         x, y = 18, 24
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
 
-        self.config_manager = ConfigManager()
         self.bot_running = False
         self.game = None
         self.bot_thread = None
         self.session_games = 0
         self.session_wins = 0
         self.settings_window = None
+        self.ui_settings_window = None
         self.current_session_window = None
         self.license_window = None
         self._controller = None
@@ -1370,8 +1611,88 @@ class MTGBotUI(tk.Tk):
         self._load_main_background_image()
         self._setup_theme_styles()
         self._setup_ui()
+        self.apply_window_topmost_mode(self.config_manager.get_ui_windows_topmost())
         self._setup_stop_hotkey()
         self.after(120, lambda: self._refresh_license_state(show_hint=True))
+
+    def _compute_ui_scale(self) -> float:
+        ref_w, ref_h = 2560.0, 1440.0
+        sw = float(max(1, self.winfo_screenwidth()))
+        sh = float(max(1, self.winfo_screenheight()))
+        auto_scale = min(sw / ref_w, sh / ref_h)
+        auto_scale = max(0.82, min(1.0, auto_scale))
+        user_percent = float(self.config_manager.get_ui_scale_percent()) / 100.0
+        return max(0.50, min(1.20, auto_scale * user_percent))
+
+    def _scale_value(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
+
+    def apply_window_topmost_mode(self, enabled: bool) -> None:
+        enabled_flag = bool(enabled)
+        _apply_window_topmost(self, enabled_flag)
+        for window in (self.settings_window, self.ui_settings_window, self.current_session_window, self.license_window):
+            if window is None:
+                continue
+            try:
+                if window.winfo_exists():
+                    _apply_window_topmost(window, enabled_flag)
+            except Exception:
+                pass
+
+    def apply_ui_scale_live(self, reopen_ui_settings: bool = False) -> None:
+        was_settings_open = bool(self.settings_window and self.settings_window.winfo_exists())
+        was_current_open = bool(self.current_session_window and self.current_session_window.winfo_exists())
+        was_license_open = bool(self.license_window and self.license_window.winfo_exists())
+        should_reopen_ui_settings = bool(reopen_ui_settings and was_settings_open)
+
+        # Close subwindows so they are recreated with the new scale.
+        for attr in ("ui_settings_window", "settings_window", "current_session_window", "license_window"):
+            window = getattr(self, attr, None)
+            if window is None:
+                continue
+            try:
+                if window.winfo_exists():
+                    window.destroy()
+            except Exception:
+                pass
+            setattr(self, attr, None)
+
+        x = int(self.winfo_x())
+        y = int(self.winfo_y())
+        self._ui_scale = self._compute_ui_scale()
+        width, height = self._scale_value(460), self._scale_value(780)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+        was_loading = bool(getattr(self, "_loading_visible", False))
+        self.ui_theme = self._build_ui_theme()
+        self.configure(bg=self.ui_theme["colors"]["bg"])
+        self._bg_photo = None
+        self._bg_canvas_item = None
+        self._bg_cache_size = None
+
+        old_canvas = getattr(self, "_card_canvas", None)
+        if old_canvas is not None:
+            try:
+                if old_canvas.winfo_exists():
+                    old_canvas.destroy()
+            except Exception:
+                pass
+
+        self._setup_theme_styles()
+        self._setup_ui()
+        self._set_running_state(bool(self.bot_running))
+        self._set_startup_loading(was_loading)
+        self.apply_window_topmost_mode(self.config_manager.get_ui_windows_topmost())
+
+        if was_current_open:
+            self._open_current_session()
+            self._update_current_session_window()
+        if was_settings_open:
+            self._open_settings()
+            if should_reopen_ui_settings:
+                self._open_ui_settings()
+        if was_license_open:
+            self._open_license()
 
     def _suppress_tk_default_icon(self):
         try:
@@ -1409,6 +1730,11 @@ class MTGBotUI(tk.Tk):
 
     def _build_ui_theme(self):
         base_font = self._pick_font_family()
+        s = self._scale_value
+        title_size = max(18, s(26))
+        subtitle_size = max(8, s(10))
+        body_size = max(9, s(11))
+        button_size = max(9, s(11))
         return {
             "colors": {
                 "bg": "#0F1115",
@@ -1432,16 +1758,16 @@ class MTGBotUI(tk.Tk):
                 "pill_running_text": "#8FE0B0",
                 "status_stopped_text": "#ffb02a",
             },
-            "spacing": {"xs": 8, "sm": 12, "md": 14, "lg": 18, "xl": 28, "card_pad": 28, "outer_margin": 20},
-            "size": {"logo": 210, "button_width": 30, "card_width": 392},
+            "spacing": {"xs": s(8), "sm": s(12), "md": s(14), "lg": s(18), "xl": s(28), "card_pad": s(28), "outer_margin": s(20)},
+            "size": {"logo": s(210), "button_width": s(30), "card_width": s(392)},
             "font": {
                 "family": base_font,
-                "title": (base_font, 26, "bold"),
-                "subtitle": (base_font, 10),
-                "body": (base_font, 11),
-                "button": (base_font, 11, "bold"),
+                "title": (base_font, title_size, "bold"),
+                "subtitle": (base_font, subtitle_size),
+                "body": (base_font, body_size),
+                "button": (base_font, button_size, "bold"),
             },
-            "radius": {"card": 18, "button": 13},
+            "radius": {"card": s(18), "button": s(13)},
         }
 
     @staticmethod
@@ -1602,9 +1928,9 @@ class MTGBotUI(tk.Tk):
         )
 
     def _setup_main_menu_button_skins(self):
-        width = 336
-        height = 48
-        radius = 14
+        width = self._scale_value(336)
+        height = self._scale_value(48)
+        radius = self._scale_value(14)
         specs = {
             "Primary.TButton": {
                 "element": "MainPrimaryGlow.button",
@@ -1958,7 +2284,7 @@ class MTGBotUI(tk.Tk):
         self.update_idletasks()
 
         center_x = canvas_w // 2
-        button_gap = 13
+        button_gap = self._scale_value(13)
 
         menu_buttons = [self._menu_buttons[name] for name in self._menu_button_order if name in self._menu_buttons]
         btn_h = max((btn["height"] for btn in menu_buttons), default=52)
@@ -2178,6 +2504,7 @@ class MTGBotUI(tk.Tk):
             self.license_window.focus_force()
             return
         self.license_window = open_license_dialog(self, on_license_change=self._on_license_change)
+        self.apply_window_topmost_mode(self.config_manager.get_ui_windows_topmost())
 
     def _open_calibration(self):
         CalibrationWindow(self, self.config_manager)
@@ -2189,6 +2516,7 @@ class MTGBotUI(tk.Tk):
             return
         self.current_session_window = CurrentSessionWindow(self, self.session_games, self.session_wins)
         self.current_session_window.update_stats(self.session_games, self.session_wins, self._switch_eta_text)
+        self.apply_window_topmost_mode(self.config_manager.get_ui_windows_topmost())
 
     def _update_current_session_window(self):
         if self.current_session_window and self.current_session_window.winfo_exists():
@@ -2200,6 +2528,15 @@ class MTGBotUI(tk.Tk):
             self.settings_window.focus_force()
             return
         self.settings_window = SettingsWindow(self, self.config_manager)
+        self.apply_window_topmost_mode(self.config_manager.get_ui_windows_topmost())
+
+    def _open_ui_settings(self):
+        if self.ui_settings_window and self.ui_settings_window.winfo_exists():
+            self.ui_settings_window.lift()
+            self.ui_settings_window.focus_force()
+            return
+        self.ui_settings_window = UISettingsWindow(self, self.config_manager)
+        self.apply_window_topmost_mode(self.config_manager.get_ui_windows_topmost())
 
     def _update_switch_eta(self):
         if not self.bot_running:
@@ -2224,8 +2561,9 @@ class MTGBotUI(tk.Tk):
 class CurrentSessionWindow(tk.Toplevel):
     def __init__(self, parent, games: int, wins: int):
         super().__init__(parent)
+        self._ui_scale = _get_ui_scale_from_widget(parent)
         self.title("Current Session")
-        width, height = 460, 320
+        width, height = self._s(460), self._s(320)
         gap_px = int(parent.winfo_fpixels("5m"))  # ~5 mm
         parent.update_idletasks()
         x = parent.winfo_x()
@@ -2235,6 +2573,7 @@ class CurrentSessionWindow(tk.Toplevel):
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
         self.configure(bg="#0F1115")
+        _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
         self._theme = {
             "bg": "#0F1115",
             "text": "#E7EAF0",
@@ -2272,6 +2611,10 @@ class CurrentSessionWindow(tk.Toplevel):
         self.update_stats(games, wins, "Account switch: off")
         self.after(40, self._refresh_scene)
         self.after(160, self._refresh_scene)
+        self.after(220, self._apply_content_minsize)
+
+    def _s(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
 
     def _load_background_image(self):
         self._bg_source_image = None
@@ -2298,6 +2641,18 @@ class CurrentSessionWindow(tk.Toplevel):
     def _refresh_scene(self):
         self._refresh_background()
         self._layout_scene()
+        self._apply_content_minsize()
+
+    def _apply_content_minsize(self):
+        _fit_window_to_canvas_content(
+            self,
+            self._canvas,
+            exclude_items={self._bg_canvas_item} if self._bg_canvas_item else None,
+            pad_x=self._s(24),
+            pad_y=self._s(22),
+            floor_w=self._s(360),
+            floor_h=self._s(240),
+        )
 
     def _refresh_background(self):
         if self._bg_source_image is None:
@@ -2429,17 +2784,18 @@ class CurrentSessionWindow(tk.Toplevel):
     def _layout_scene(self):
         if not self._canvas or not self._canvas.winfo_exists():
             return
+        s = self._s
         cw = max(2, int(self._canvas.winfo_width()))
-        box_w = min(408, max(320, cw - 48))
+        box_w = min(s(408), max(s(320), cw - s(48)))
         box_x = (cw - box_w) // 2
-        box_y = 96
-        box_h = 132
+        box_y = s(96)
+        box_h = s(132)
         self._render_stats_panel(box_w, box_h)
         self._canvas.coords(self._stats_panel_item, box_x, box_y)
-        self._canvas.coords(self._stats_text_item, box_x + 24, box_y + 20)
+        self._canvas.coords(self._stats_text_item, box_x + s(24), box_y + s(20))
         self._canvas.tag_raise(self._stats_text_item)
         if self._back_btn:
-            y = box_y + box_h + 22
+            y = box_y + box_h + s(22)
             self._canvas.coords(self._back_btn["bg_item"], cw // 2, y)
             self._canvas.coords(self._back_btn["text_item"], cw // 2, y + self._back_btn["height"] // 2 - 2)
 
@@ -2452,8 +2808,9 @@ class CurrentSessionWindow(tk.Toplevel):
 class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, config_manager: ConfigManager):
         super().__init__(parent)
+        self._ui_scale = _get_ui_scale_from_widget(parent)
         self.title("Settings")
-        width, height = 460, 430
+        width, height = self._s(460), self._s(430)
         gap_px = int(parent.winfo_fpixels("5m"))  # ~5 mm
         parent.update_idletasks()
         x = parent.winfo_x()
@@ -2463,6 +2820,7 @@ class SettingsWindow(tk.Toplevel):
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
         self.configure(bg="#0F1115")
+        _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
         self._config_manager = config_manager
         self._recording = False
         self._record_ignore_first = False
@@ -2491,12 +2849,15 @@ class SettingsWindow(tk.Toplevel):
         self._settings_bg_canvas_item = None
         self._settings_canvas = None
         self._title_item = None
-
         self._load_settings_background_image()
         self._build_settings_shell()
         self.bind("<Configure>", self._on_settings_configure)
         self.after(40, self._refresh_settings_scene)
         self.after(160, self._refresh_settings_scene)
+        self.after(220, self._apply_content_minsize)
+
+    def _s(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
 
     def _load_settings_background_image(self):
         self._settings_bg_source_image = None
@@ -2518,6 +2879,18 @@ class SettingsWindow(tk.Toplevel):
     def _refresh_settings_scene(self):
         self._refresh_settings_background()
         self._layout_settings_canvas()
+        self._apply_content_minsize()
+
+    def _apply_content_minsize(self):
+        _fit_window_to_canvas_content(
+            self,
+            self._settings_canvas,
+            exclude_items={self._settings_bg_canvas_item} if self._settings_bg_canvas_item else None,
+            pad_x=self._s(22),
+            pad_y=self._s(22),
+            floor_w=self._s(340),
+            floor_h=self._s(300),
+        )
 
     def _refresh_settings_background(self):
         if not self._settings_canvas or not self._settings_canvas.winfo_exists():
@@ -2577,6 +2950,12 @@ class SettingsWindow(tk.Toplevel):
             "record",
             "Record Action",
             self._open_record_actions_window,
+            style_name="Secondary.TButton",
+        )
+        self._create_settings_canvas_button(
+            "ui",
+            "User Interface",
+            self._open_ui_settings_window,
             style_name="Secondary.TButton",
         )
         self._create_settings_canvas_button(
@@ -2740,15 +3119,16 @@ class SettingsWindow(tk.Toplevel):
     def _layout_settings_canvas(self):
         if not hasattr(self, "_settings_canvas"):
             return
+        s = self._s
         cw = max(10, int(self._settings_canvas.winfo_width()))
         if self._title_item is not None:
-            self._settings_canvas.coords(self._title_item, cw // 2, 34)
+            self._settings_canvas.coords(self._title_item, cw // 2, s(34))
 
         if not getattr(self, "_settings_button_order", None):
             return
         x = cw // 2
-        y_start = 116
-        y_step = 76
+        y_start = s(116)
+        y_step = s(76)
         for idx, name in enumerate(self._settings_button_order):
             btn = self._settings_buttons.get(name)
             if not btn:
@@ -2761,6 +3141,13 @@ class SettingsWindow(tk.Toplevel):
                 h = btn["height"]
                 self._settings_canvas.coords(btn["bg_item"], x - (w // 2), y, x + (w // 2), y + h)
             self._settings_canvas.coords(btn["text_item"], x, y + btn["height"] // 2 - 2)
+    def _open_ui_settings_window(self):
+        parent_ui = getattr(self, "master", None)
+        if parent_ui is not None and hasattr(parent_ui, "_open_ui_settings"):
+            try:
+                parent_ui._open_ui_settings()
+            except Exception:
+                pass
 
     def _record_actions_prompt(self):
         if self._recording:
@@ -2768,7 +3155,7 @@ class SettingsWindow(tk.Toplevel):
             return
         prompt = tk.Toplevel(self)
         prompt.title("Record")
-        prompt.geometry("280x80")
+        prompt.geometry(f"{self._s(280)}x{self._s(80)}")
         prompt.resizable(False, False)
         prompt.configure(bg="#2b2b2b")
         label = tk.Label(
@@ -2952,7 +3339,7 @@ class SettingsWindow(tk.Toplevel):
     def _prompt_record_name_and_save(self):
         prompt = tk.Toplevel(self)
         prompt.title("Save Record")
-        prompt.geometry("300x120")
+        prompt.geometry(f"{self._s(300)}x{self._s(120)}")
         prompt.resizable(False, False)
         prompt.configure(bg="#2b2b2b")
 
@@ -3055,9 +3442,303 @@ class SettingsWindow(tk.Toplevel):
             super().destroy()
 
 
+class UISettingsWindow(tk.Toplevel):
+    def __init__(self, parent, config_manager: ConfigManager):
+        super().__init__(parent)
+        self._ui_scale = _get_ui_scale_from_widget(parent)
+        self._config_manager = config_manager
+        self.title("User Interface")
+        width, height = self._s(460), self._s(430)
+        gap_px = int(parent.winfo_fpixels("5m"))
+        parent.update_idletasks()
+        x = parent.winfo_x()
+        y = parent.winfo_rooty() + parent.winfo_height() + gap_px
+        max_y = max(0, self.winfo_screenheight() - height)
+        y = min(y, max_y)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.resizable(False, False)
+        self.configure(bg="#0F1115")
+        _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
+
+        self._theme = {
+            "bg": "#0F1115",
+            "text": "#E7EAF0",
+            "text_muted": "#9AA3B2",
+            "card_border": "#ff9318",
+            "card_body": "#ffb841",
+            "card_bg": "#320a02",
+        }
+        self._bg_source_image = None
+        self._bg_photo = None
+        self._bg_canvas_item = None
+        self._canvas = tk.Canvas(self, bg=self._theme["bg"], highlightthickness=0, bd=0)
+        self._canvas.pack(fill=tk.BOTH, expand=True)
+        self._canvas.bind("<Configure>", self._on_canvas_resize)
+
+        self._scale_var = tk.IntVar(value=self._config_manager.get_ui_scale_percent())
+        self._scale_text_var = tk.StringVar(value=f"{self._scale_var.get()}%")
+        self._topmost_var = tk.BooleanVar(value=bool(self._config_manager.get_ui_windows_topmost()))
+
+        self._settings_panel_item = self._canvas.create_rectangle(
+            0, 0, 0, 0, fill=self._theme["card_bg"], outline=self._theme["card_border"], width=3
+        )
+        self._scale_label_item = self._canvas.create_text(
+            0,
+            0,
+            text="UI Scale",
+            fill=self._theme["card_body"],
+            font=("Segoe UI", max(10, self._s(12)), "bold"),
+            anchor="w",
+        )
+        self._scale_value_item = self._canvas.create_text(
+            0,
+            0,
+            text=self._scale_text_var.get(),
+            fill=self._theme["card_body"],
+            font=("Segoe UI", max(10, self._s(11))),
+            anchor="e",
+        )
+        self._slider = tk.Scale(
+            self._canvas,
+            from_=50,
+            to=120,
+            orient=tk.HORIZONTAL,
+            showvalue=False,
+            resolution=1,
+            variable=self._scale_var,
+            command=self._on_slider_change,
+            bg=self._theme["card_bg"],
+            fg=self._theme["card_body"],
+            troughcolor="#8A4B13",
+            activebackground="#3D130E",
+            highlightthickness=0,
+            bd=0,
+            length=self._s(320),
+        )
+        self._slider_window = self._canvas.create_window(0, 0, anchor="w", window=self._slider)
+
+        self._topmost_check = tk.Checkbutton(
+            self._canvas,
+            text="UI-Fenster im Vordergrund",
+            variable=self._topmost_var,
+            onvalue=True,
+            offvalue=False,
+            bg=self._theme["card_bg"],
+            fg=self._theme["card_body"],
+            activebackground=self._theme["card_bg"],
+            activeforeground="#FFFFFF",
+            selectcolor="#8A4B13",
+            highlightthickness=0,
+            bd=0,
+            font=("Segoe UI", max(9, self._s(10))),
+            anchor="w",
+        )
+        self._topmost_window = self._canvas.create_window(0, 0, anchor="w", window=self._topmost_check)
+
+        self._buttons = {}
+        self._button_order = []
+        self._create_button("save", "Save", self._save_ui_settings, "Secondary.TButton")
+        self._create_button("back", "Back", self.destroy, "Secondary.TButton")
+
+        self._load_background_image()
+        self.bind("<Configure>", self._on_resize)
+        self.after(30, self._refresh_scene)
+        self.after(120, self._refresh_scene)
+        self.after(220, self._apply_content_minsize)
+
+    def _s(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
+
+    def _on_slider_change(self, _value=None):
+        text = f"{int(self._scale_var.get())}%"
+        self._scale_text_var.set(text)
+        if hasattr(self, "_canvas") and self._canvas and hasattr(self, "_scale_value_item"):
+            try:
+                self._canvas.itemconfigure(self._scale_value_item, text=text)
+            except Exception:
+                pass
+
+    def _load_background_image(self):
+        self._bg_source_image = None
+        for path in (_image_path("background"), _image_path("background.png")):
+            if not os.path.exists(path):
+                continue
+            try:
+                with Image.open(path) as image:
+                    self._bg_source_image = image.convert("RGB")
+                    return
+            except Exception:
+                continue
+
+    def _on_resize(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+        self._refresh_scene()
+
+    def _on_canvas_resize(self, event=None):
+        if event is not None and event.widget is not self._canvas:
+            return
+        self._refresh_scene()
+
+    def _refresh_scene(self):
+        self._refresh_background()
+        self._layout_scene()
+        self._apply_content_minsize()
+
+    def _apply_content_minsize(self):
+        _fit_window_to_canvas_content(
+            self,
+            self._canvas,
+            exclude_items={self._bg_canvas_item} if self._bg_canvas_item else None,
+            pad_x=self._s(22),
+            pad_y=self._s(20),
+            floor_w=self._s(330),
+            floor_h=self._s(270),
+        )
+
+    def _refresh_background(self):
+        if self._bg_source_image is None:
+            return
+        width = max(2, self._canvas.winfo_width())
+        height = max(2, self._canvas.winfo_height())
+        try:
+            fitted = ImageOps.fit(
+                self._bg_source_image,
+                (width, height),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
+            )
+            self._bg_photo = ImageTk.PhotoImage(fitted)
+            if self._bg_canvas_item is None:
+                self._bg_canvas_item = self._canvas.create_image(0, 0, anchor="nw", image=self._bg_photo)
+            else:
+                self._canvas.coords(self._bg_canvas_item, 0, 0)
+                self._canvas.itemconfigure(self._bg_canvas_item, image=self._bg_photo)
+            self._canvas.tag_lower(self._bg_canvas_item)
+        except Exception:
+            pass
+
+    def _create_button(self, name: str, text: str, command, style_name: str):
+        parent_ui = getattr(self, "master", None)
+        skins = None
+        if parent_ui is not None:
+            skins_all = getattr(parent_ui, "_button_skins", {})
+            skins = skins_all.get(style_name)
+            if skins is None and skins_all:
+                skins = next(iter(skins_all.values()))
+        if not skins:
+            return
+        tag = f"ui_settings_btn_{name}"
+        bg_item = self._canvas.create_image(0, 0, anchor="n", image=skins["normal"], tags=(tag,))
+        text_item = self._canvas.create_text(
+            0, 0, text=text, fill="#F2F6FF", font=("Segoe UI", max(9, self._s(11)), "bold"), anchor="center", tags=(tag,)
+        )
+        self._buttons[name] = {
+            "command": command,
+            "enabled": True,
+            "hover": False,
+            "pressed": False,
+            "skins": skins,
+            "bg_item": bg_item,
+            "text_item": text_item,
+            "width": int(skins["normal"].width()),
+            "height": int(skins["normal"].height()),
+        }
+        self._button_order.append(name)
+        self._canvas.tag_bind(tag, "<Enter>", lambda _e, n=name: self._on_button_enter(n))
+        self._canvas.tag_bind(tag, "<Leave>", lambda _e, n=name: self._on_button_leave(n))
+        self._canvas.tag_bind(tag, "<ButtonPress-1>", lambda _e, n=name: self._on_button_press(n))
+        self._canvas.tag_bind(tag, "<ButtonRelease-1>", lambda _e, n=name: self._on_button_release(n))
+
+    def _on_button_enter(self, name: str):
+        btn = self._buttons.get(name)
+        if not btn:
+            return
+        btn["hover"] = True
+        self._canvas.itemconfigure(btn["bg_item"], image=btn["skins"]["hover"])
+
+    def _on_button_leave(self, name: str):
+        btn = self._buttons.get(name)
+        if not btn:
+            return
+        btn["hover"] = False
+        btn["pressed"] = False
+        self._canvas.itemconfigure(btn["bg_item"], image=btn["skins"]["normal"])
+
+    def _on_button_press(self, name: str):
+        btn = self._buttons.get(name)
+        if not btn:
+            return
+        btn["pressed"] = True
+        self._canvas.itemconfigure(btn["bg_item"], image=btn["skins"]["pressed"])
+
+    def _on_button_release(self, name: str):
+        btn = self._buttons.get(name)
+        if not btn:
+            return
+        fire = bool(btn["pressed"] and btn["hover"])
+        btn["pressed"] = False
+        self._canvas.itemconfigure(btn["bg_item"], image=btn["skins"]["hover"] if btn["hover"] else btn["skins"]["normal"])
+        if fire:
+            try:
+                btn["command"]()
+            except Exception:
+                pass
+
+    def _layout_scene(self):
+        if not self._canvas or not self._canvas.winfo_exists():
+            return
+        s = self._s
+        cw = max(2, self._canvas.winfo_width())
+        x = cw // 2
+        panel_w = min(s(408), max(s(320), cw - s(48)))
+        panel_x1 = (cw - panel_w) // 2
+        panel_x2 = panel_x1 + panel_w
+
+        panel_y1 = s(74)
+        panel_h = s(190)
+        panel_y2 = panel_y1 + panel_h
+        self._canvas.coords(self._settings_panel_item, panel_x1, panel_y1, panel_x2, panel_y2)
+        self._canvas.coords(self._scale_label_item, panel_x1 + s(20), panel_y1 + s(20))
+        self._canvas.coords(self._scale_value_item, panel_x2 - s(20), panel_y1 + s(20))
+        self._canvas.coords(self._slider_window, panel_x1 + s(18), panel_y1 + s(54))
+        self._canvas.itemconfigure(self._slider_window, width=panel_w - s(36), height=s(36))
+        self._canvas.coords(self._topmost_window, panel_x1 + s(16), panel_y1 + s(120))
+        self._canvas.itemconfigure(self._topmost_window, width=panel_w - s(32), height=s(34))
+
+        y = panel_y2 + s(22)
+        gap = s(76)
+        for name in self._button_order:
+            btn = self._buttons.get(name)
+            if not btn:
+                continue
+            self._canvas.coords(btn["bg_item"], x, y)
+            self._canvas.coords(btn["text_item"], x, y + btn["height"] // 2 - 2)
+            y += gap
+
+    def _save_ui_settings(self):
+        self._config_manager.set_ui_scale_percent(int(self._scale_var.get()))
+        self._config_manager.set_ui_windows_topmost(bool(self._topmost_var.get()))
+        parent_ui = getattr(self, "master", None)
+        if parent_ui is not None and hasattr(parent_ui, "apply_window_topmost_mode"):
+            try:
+                parent_ui.apply_window_topmost_mode(bool(self._topmost_var.get()))
+            except Exception:
+                pass
+        if parent_ui is not None and hasattr(parent_ui, "apply_ui_scale_live"):
+            try:
+                parent_ui.apply_ui_scale_live(reopen_ui_settings=True)
+                return
+            except Exception as exc:
+                messagebox.showerror("User Interface", f"Apply failed: {exc}")
+                return
+        messagebox.showinfo("User Interface", "Gespeichert.")
+
+
 class SwitchAccountWindow(tk.Toplevel):
     def __init__(self, parent: SettingsWindow, config_manager: ConfigManager):
         super().__init__(parent)
+        self._ui_scale = _get_ui_scale_from_widget(parent)
         self._parent = parent
         self._config_manager = config_manager
         self._theme = {
@@ -3086,7 +3767,7 @@ class SwitchAccountWindow(tk.Toplevel):
             "row_selected_text": "#F2F6FF",
         }
         self.title("Manage Accounts")
-        width, height = 460, 980
+        width, height = self._s(460), self._s(980)
         gap_px = int(parent.winfo_fpixels("5m"))
         parent.update_idletasks()
         x = parent.winfo_x()
@@ -3096,6 +3777,7 @@ class SwitchAccountWindow(tk.Toplevel):
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
         self.configure(bg=self._theme["bg"])
+        _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
 
         self._max_accounts = 10
         self._order_slots = 5
@@ -3119,7 +3801,6 @@ class SwitchAccountWindow(tk.Toplevel):
         self._canvas = tk.Canvas(self, bg=self._theme["bg"], highlightthickness=0, bd=0)
         self._canvas.pack(fill=tk.BOTH, expand=True)
         self._canvas.bind("<Configure>", self._on_resize_manage_background)
-
         self._load_accounts_from_config()
         self._setup_styles()
         self._build_ui()
@@ -3129,6 +3810,10 @@ class SwitchAccountWindow(tk.Toplevel):
         self.after(420, self._refresh_manage_background)
         self._refresh_accounts_table()
         self._refresh_order_choices()
+        self.after(220, self._apply_content_minsize)
+
+    def _s(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
 
     def _load_accounts_from_config(self):
         existing = self._config_manager.get_managed_accounts()[: self._max_accounts]
@@ -3192,6 +3877,18 @@ class SwitchAccountWindow(tk.Toplevel):
 
     def _on_resize_manage_background(self, _event=None):
         self._refresh_manage_background()
+        self._apply_content_minsize()
+
+    def _apply_content_minsize(self):
+        _fit_window_to_canvas_content(
+            self,
+            self._canvas,
+            exclude_items={self._bg_canvas_item} if self._bg_canvas_item else None,
+            pad_x=18,
+            pad_y=20,
+            floor_w=420,
+            floor_h=620,
+        )
 
     def _fit_window_to_content_width(self):
         try:
@@ -3730,9 +4427,10 @@ class _RecordActionsButtonProxy:
 class RecordActionsWindow(tk.Toplevel):
     def __init__(self, parent: SettingsWindow):
         super().__init__(parent)
+        self._ui_scale = _get_ui_scale_from_widget(parent)
         self._parent = parent
         self.title("Record Actions")
-        width, height = 460, 430
+        width, height = self._s(460), self._s(430)
         gap_px = int(parent.winfo_fpixels("4m"))  # ~0.4 cm
         parent.update_idletasks()
         x = parent.winfo_x() + parent.winfo_width() + gap_px
@@ -3744,6 +4442,7 @@ class RecordActionsWindow(tk.Toplevel):
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
         self.configure(bg="#0F1115")
+        _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
         self._theme = {
             "bg": "#0F1115",
             "text": "#E7EAF0",
@@ -3778,6 +4477,10 @@ class RecordActionsWindow(tk.Toplevel):
         self.bind("<Configure>", self._on_resize_background)
         self.after(30, self._refresh_scene)
         self.after(120, self._refresh_scene)
+        self.after(220, self._apply_content_minsize)
+
+    def _s(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
 
     def _create_canvas_button(self, name: str, text: str, command, style_name: str = "Secondary.TButton"):
         parent_ui = getattr(self._parent, "master", None)
@@ -3917,15 +4620,28 @@ class RecordActionsWindow(tk.Toplevel):
     def _refresh_scene(self):
         self._refresh_background()
         self._layout_scene()
+        self._apply_content_minsize()
+
+    def _apply_content_minsize(self):
+        _fit_window_to_canvas_content(
+            self,
+            self._canvas,
+            exclude_items={self._bg_canvas_item} if self._bg_canvas_item else None,
+            pad_x=self._s(22),
+            pad_y=self._s(22),
+            floor_w=self._s(320),
+            floor_h=self._s(280),
+        )
 
     def _layout_scene(self):
         if not self._canvas or not self._canvas.winfo_exists():
             return
+        s = self._s
         cw = max(2, self._canvas.winfo_width())
         x = cw // 2
-        self._canvas.coords(self._title_item, x, 32)
-        y_start = 126
-        y_step = 78
+        self._canvas.coords(self._title_item, x, s(32))
+        y_start = s(126)
+        y_step = s(78)
         for idx, name in enumerate(self._button_order):
             btn = self._buttons.get(name)
             if not btn:
@@ -3967,10 +4683,12 @@ class RecordActionsWindow(tk.Toplevel):
 class LogWindow(tk.Toplevel):
     def __init__(self, parent, log_path: str):
         super().__init__(parent)
+        self._ui_scale = _get_ui_scale_from_widget(parent)
         self.title(log_path)
-        self.geometry("800x500")
+        self.geometry(f"{self._s(800)}x{self._s(500)}")
         self.resizable(True, True)
         self.configure(bg="#1e1e1e")
+        _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
         self._log_path = log_path
         self._stopped = False
 
@@ -3999,6 +4717,9 @@ class LogWindow(tk.Toplevel):
         back_btn.grid(row=2, column=0, sticky="w", pady=(8, 0))
         _apply_submenu_theme(self)
 
+    def _s(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
+
     def _refresh(self):
         if self._stopped:
             return
@@ -4026,14 +4747,19 @@ class LogWindow(tk.Toplevel):
 class RecordsWindow(tk.Toplevel):
     def __init__(self, parent, records_path: str, play_callback):
         super().__init__(parent)
+        self._ui_scale = _get_ui_scale_from_widget(parent)
         self.title("Show Records")
-        self.geometry("560x420")
+        self.geometry(f"{self._s(560)}x{self._s(420)}")
         self.resizable(False, False)
         self.configure(bg="#2b2b2b")
+        _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
         self._records_path = records_path
         self._play_callback = play_callback
         self._setup_ui()
         _apply_submenu_theme(self)
+
+    def _s(self, value: int | float) -> int:
+        return max(1, int(round(float(value) * float(self._ui_scale))))
 
     def _setup_ui(self):
         main_frame = tk.Frame(self, bg="#2b2b2b", padx=16, pady=16)

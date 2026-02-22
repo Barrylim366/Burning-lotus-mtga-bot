@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox, ttk
 from .fingerprint import get_device_id
 from .validator import (
     LicenseValidationResult,
+    activate_emergency_code,
     activate_license_text,
     format_license_details,
     validate_installed_license,
@@ -20,22 +21,24 @@ class LicenseDialog(tk.Toplevel):
         self.resizable(False, False)
         self._on_license_change = on_license_change
         self._status_result: LicenseValidationResult | None = None
+        self._ui_scale = float(getattr(parent, "_ui_scale", 1.0) or 1.0)
+        s = lambda v: max(1, int(round(float(v) * self._ui_scale)))
 
         parent.update_idletasks()
-        width, height = 700, 560
-        x = parent.winfo_x() + 20
-        y = parent.winfo_y() + 20
+        width, height = s(700), s(560)
+        x = parent.winfo_x() + s(20)
+        y = parent.winfo_y() + s(20)
         self.geometry(f"{width}x{height}+{x}+{y}")
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        root = ttk.Frame(self, padding=14)
+        root = ttk.Frame(self, padding=s(14))
         root.grid(row=0, column=0, sticky="nsew")
         root.columnconfigure(1, weight=1)
         root.rowconfigure(7, weight=1)
 
-        ttk.Label(root, text="License Status", font=("Segoe UI", 11, "bold")).grid(
+        ttk.Label(root, text="License Status", font=("Segoe UI", max(9, s(11)), "bold")).grid(
             row=0, column=0, sticky="w", pady=(0, 6)
         )
         self.status_var = tk.StringVar(value="Checking...")
@@ -57,8 +60,16 @@ class LicenseDialog(tk.Toplevel):
             row=3, column=1, sticky="w", pady=(10, 4)
         )
 
-        self.license_text = tk.Text(root, height=14, wrap="word")
+        self.license_text = tk.Text(root, height=max(8, s(14)), wrap="word")
         self.license_text.grid(row=4, column=0, columnspan=3, sticky="nsew", pady=(0, 10))
+
+        ttk.Label(root, text="Emergency code").grid(row=5, column=0, sticky="w", pady=(0, 4))
+        self.emergency_code_var = tk.StringVar(value="")
+        self.emergency_entry = ttk.Entry(root, textvariable=self.emergency_code_var, show="*")
+        self.emergency_entry.grid(row=5, column=1, sticky="ew", pady=(0, 4))
+        ttk.Button(root, text="Activate emergency", command=self._activate_emergency_code).grid(
+            row=5, column=2, sticky="w", padx=(8, 0), pady=(0, 4)
+        )
 
         btn_row = ttk.Frame(root)
         btn_row.grid(row=8, column=0, columnspan=3, sticky="e")
@@ -135,6 +146,22 @@ class LicenseDialog(tk.Toplevel):
         self._refresh_status()
         if result.valid:
             messagebox.showinfo("License", "License activated successfully.")
+            return
+        messagebox.showerror("License", result.message)
+
+    def _activate_emergency_code(self) -> None:
+        code = self.emergency_code_var.get().strip()
+        if not code:
+            messagebox.showerror("License", "Please enter an emergency code.")
+            return
+        result = activate_emergency_code(code)
+        self._notify_change(result)
+        self._refresh_status()
+        if result.valid:
+            expires_text = "-"
+            if isinstance(result.payload, dict):
+                expires_text = str(result.payload.get("expires_at") or "-")
+            messagebox.showinfo("License", f"Emergency code activated.\nValid until: {expires_text}")
             return
         messagebox.showerror("License", result.message)
 
