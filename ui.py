@@ -1286,7 +1286,7 @@ class ConfigManager:
             "log_path": detected_log or _default_player_log_path(),
             "screen_bounds": [[0, 0], [2560, 1440]],
             "input_backend": "auto",
-            "ui_windows_topmost": False,
+            "ui_windows_topmost": True,
             "ui_scale_percent": 100,
             "account_switch_minutes": 0,
             "managed_accounts": [],
@@ -1385,7 +1385,7 @@ class ConfigManager:
             return 0
 
     def get_ui_windows_topmost(self) -> bool:
-        return bool(self.config.get("ui_windows_topmost", False))
+        return bool(self.config.get("ui_windows_topmost", True))
 
     def set_ui_windows_topmost(self, enabled: bool) -> None:
         self.config["ui_windows_topmost"] = bool(enabled)
@@ -3519,7 +3519,7 @@ class UISettingsWindow(tk.Toplevel):
 
         self._topmost_check = tk.Checkbutton(
             self._canvas,
-            text="UI-Fenster im Vordergrund",
+            text="Keep UI windows on top",
             variable=self._topmost_var,
             onvalue=True,
             offvalue=False,
@@ -3767,7 +3767,8 @@ class SwitchAccountWindow(tk.Toplevel):
             "row_selected_text": "#F2F6FF",
         }
         self.title("Manage Accounts")
-        width, height = self._s(460), self._s(980)
+        width = self._s(460)
+        height = min(self._s(720), max(560, self.winfo_screenheight() - 80))
         gap_px = int(parent.winfo_fpixels("5m"))
         parent.update_idletasks()
         x = parent.winfo_x()
@@ -3776,6 +3777,7 @@ class SwitchAccountWindow(tk.Toplevel):
         y = min(y, max_y)
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
+        self.minsize(460, 560)
         self.configure(bg=self._theme["bg"])
         _apply_window_topmost(self, _get_ui_topmost_setting_from_widget(parent))
 
@@ -3886,8 +3888,8 @@ class SwitchAccountWindow(tk.Toplevel):
             exclude_items={self._bg_canvas_item} if self._bg_canvas_item else None,
             pad_x=18,
             pad_y=20,
-            floor_w=420,
-            floor_h=620,
+            floor_w=460,
+            floor_h=680,
         )
 
     def _fit_window_to_content_width(self):
@@ -4160,7 +4162,7 @@ class SwitchAccountWindow(tk.Toplevel):
             bd=0,
             relief=tk.FLAT,
             highlightthickness=0,
-            font=("Segoe UI", 10),
+            font=("Segoe UI", 9),
         )
         return entry
 
@@ -4182,7 +4184,7 @@ class SwitchAccountWindow(tk.Toplevel):
             highlightthickness=0,
             padx=8,
             pady=5,
-            font=("Segoe UI", 11, "bold"),
+            font=("Segoe UI", 10, "bold"),
             cursor="hand2",
         )
         return btn
@@ -4193,70 +4195,68 @@ class SwitchAccountWindow(tk.Toplevel):
         self._content = cv
         self._canvas_buttons = {}
         self._manage_button_skin_cache = {}
-        self._create_manage_group_panel("switch_block", x=16, y=64, width=428, height=108)
-        self._create_manage_group_panel("accounts_block", x=16, y=184, width=428, height=506)
-        self._create_manage_group_panel("order_block", x=16, y=702, width=428, height=254)
+        self._create_manage_group_panel("switch_block", x=16, y=30, width=428, height=94)
+        self._create_manage_group_panel("accounts_block", x=16, y=136, width=428, height=318)
+        self._create_manage_group_panel("order_block", x=16, y=466, width=428, height=220)
 
-        cv.create_text(26, 18, text="Manage Accounts", fill=c["text"], font=("Segoe UI", 24, "bold"), anchor="nw")
-
-        cv.create_text(26, 86, text="Switch account (min)", fill=c["text"], font=("Segoe UI", 12), anchor="nw")
+        cv.create_text(26, 48, text="Switch account (min)", fill=c["text"], font=("Segoe UI", 10), anchor="nw")
         self.switch_minutes_var = tk.StringVar(value=str(self._config_manager.get_account_switch_minutes()))
         switch_entry = self._make_entry(self, textvariable=self.switch_minutes_var, width=6)
         switch_entry.bind("<Return>", lambda _e: self._save_switch_minutes())
-        cv.create_window(178, 88, anchor="nw", window=switch_entry)
-        cv.create_text(244, 86, text="0 = off", fill=c["text_muted"], font=("Segoe UI", 11), anchor="nw")
+        cv.create_window(178, 50, anchor="nw", window=switch_entry)
+        cv.create_text(244, 48, text="0 = off", fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw")
         self._create_manage_canvas_button(
             name="save_switch",
             text="Save Time",
             x=26,
-            y=116,
+            y=76,
             body_w=150,
-            body_h=40,
+            body_h=34,
             command=self._save_switch_minutes,
             primary=True,
         )
 
-        cv.create_text(26, 190, text="Accounts (max 10)", fill=c["text"], font=("Segoe UI", 15, "bold"), anchor="nw")
-        cv.create_text(26, 226, text="#", fill=c["text_muted"], font=("Segoe UI", 11), anchor="nw")
-        cv.create_text(62, 226, text="Name", fill=c["text_muted"], font=("Segoe UI", 11), anchor="nw")
-        cv.create_text(208, 226, text="Email", fill=c["text_muted"], font=("Segoe UI", 11), anchor="nw")
+        cv.create_text(26, 146, text="Accounts (max 10)", fill=c["text"], font=("Segoe UI", 13, "bold"), anchor="nw")
+        cv.create_text(26, 174, text="#", fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw")
+        cv.create_text(62, 174, text="Name", fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw")
+        cv.create_text(208, 174, text="Email", fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw")
 
         self._table_rows = []
-        row_y_start = 258
-        row_step = 36
+        row_y_start = 194
+        row_step = 20
         for idx in range(self._max_accounts):
             y = row_y_start + idx * row_step
             tag = f"acct_row_{idx}"
-            idx_item = cv.create_text(26, y, text=str(idx + 1), fill=c["text_muted"], font=("Segoe UI", 11), anchor="nw", tags=(tag,))
-            name_item = cv.create_text(62, y, text="", fill=c["text"], font=("Segoe UI", 11, "bold"), anchor="nw", tags=(tag,))
-            email_item = cv.create_text(208, y, text="", fill=c["text"], font=("Segoe UI", 11), anchor="nw", tags=(tag,))
+            idx_item = cv.create_text(26, y, text=str(idx + 1), fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw", tags=(tag,))
+            name_item = cv.create_text(62, y, text="", fill=c["text"], font=("Segoe UI", 9, "bold"), anchor="nw", tags=(tag,))
+            email_item = cv.create_text(208, y, text="", fill=c["text"], font=("Segoe UI", 9), anchor="nw", tags=(tag,))
             self._table_rows.append({"idx": idx_item, "name": name_item, "email": email_item})
 
         self._create_manage_canvas_button(
             name="save_accounts",
             text="Save Accounts",
             x=26,
-            y=632,
+            y=404,
             body_w=160,
-            body_h=40,
+            body_h=34,
             command=self._save_accounts,
             primary=False,
         )
 
-        cv.create_text(26, 714, text="Account Play Order", fill=c["text"], font=("Segoe UI", 12), anchor="nw")
+        cv.create_text(26, 478, text="Account Play Order", fill=c["text"], font=("Segoe UI", 10), anchor="nw")
         current_order = self._config_manager.get_account_play_order()
         self._order_vars = []
         self._order_combos = []
         for idx in range(self._order_slots):
-            y = 714 + idx * 38
-            cv.create_text(218, y, text=str(idx + 1), fill=c["text_muted"], font=("Segoe UI", 11), anchor="nw")
+            y = 500 + idx * 24
+            cv.create_text(218, y, text=str(idx + 1), fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw")
             var = tk.StringVar(value=current_order[idx] if idx < len(current_order) else "")
             combo = ttk.Combobox(
                 self,
                 textvariable=var,
                 values=[],
                 state="readonly",
-                width=17,
+                width=15,
             )
             combo.configure(style="ManageFire.TCombobox")
             cv.create_window(238, y - 2, anchor="nw", window=combo)
@@ -4267,9 +4267,9 @@ class SwitchAccountWindow(tk.Toplevel):
             name="save_order",
             text="Save Order",
             x=26,
-            y=900,
+            y=634,
             body_w=140,
-            body_h=40,
+            body_h=34,
             command=self._save_account_play_order,
             primary=False,
         )
@@ -4277,9 +4277,9 @@ class SwitchAccountWindow(tk.Toplevel):
             name="close_bottom",
             text="Close",
             x=246,
-            y=900,
+            y=634,
             body_w=120,
-            body_h=40,
+            body_h=34,
             command=self.destroy,
             primary=False,
         )
