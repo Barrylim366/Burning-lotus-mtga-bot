@@ -1287,7 +1287,7 @@ class ConfigManager:
             "screen_bounds": [[0, 0], [2560, 1440]],
             "input_backend": "auto",
             "ui_windows_topmost": True,
-            "ui_scale_percent": 100,
+            "ui_scale_percent": 50,
             "account_switch_minutes": 0,
             "managed_accounts": [],
             "account_cycle_index": 0,
@@ -1393,17 +1393,17 @@ class ConfigManager:
 
     def get_ui_scale_percent(self) -> int:
         try:
-            value = int(self.config.get("ui_scale_percent", 100))
+            value = int(self.config.get("ui_scale_percent", 50))
         except (TypeError, ValueError):
-            value = 100
-        return max(75, min(120, value))
+            value = 50
+        return max(50, min(120, value))
 
     def set_ui_scale_percent(self, percent: int) -> None:
         try:
             value = int(percent)
         except (TypeError, ValueError):
             return
-        self.config["ui_scale_percent"] = max(75, min(120, value))
+        self.config["ui_scale_percent"] = max(50, min(120, value))
         self._save_config()
 
     def set_account_switch_minutes(self, minutes: int) -> None:
@@ -2788,7 +2788,7 @@ class CurrentSessionWindow(tk.Toplevel):
         cw = max(2, int(self._canvas.winfo_width()))
         box_w = min(s(408), max(s(320), cw - s(48)))
         box_x = (cw - box_w) // 2
-        box_y = s(96)
+        box_y = s(38)
         box_h = s(132)
         self._render_stats_panel(box_w, box_h)
         self._canvas.coords(self._stats_panel_item, box_x, box_y)
@@ -2847,6 +2847,7 @@ class SettingsWindow(tk.Toplevel):
         self._settings_bg_source_image = None
         self._settings_bg_photo = None
         self._settings_bg_canvas_item = None
+        self._settings_bg_cache_size = None
         self._settings_canvas = None
         self._title_item = None
         self._load_settings_background_image()
@@ -2901,13 +2902,16 @@ class SettingsWindow(tk.Toplevel):
             self._settings_canvas.configure(bg=self._theme["bg"])
             return
         try:
-            fitted = ImageOps.fit(
-                self._settings_bg_source_image,
-                (width, height),
-                method=Image.Resampling.LANCZOS,
-                centering=(0.5, 0.5),
-            )
-            self._settings_bg_photo = ImageTk.PhotoImage(fitted)
+            target_size = (width, height)
+            if self._settings_bg_photo is None or self._settings_bg_cache_size != target_size:
+                fitted = ImageOps.fit(
+                    self._settings_bg_source_image,
+                    target_size,
+                    method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.5),
+                )
+                self._settings_bg_photo = ImageTk.PhotoImage(fitted)
+                self._settings_bg_cache_size = target_size
             if self._settings_bg_canvas_item is None:
                 self._settings_bg_canvas_item = self._settings_canvas.create_image(
                     0, 0, anchor="nw", image=self._settings_bg_photo
@@ -2929,14 +2933,7 @@ class SettingsWindow(tk.Toplevel):
         )
         self._settings_canvas.pack(fill=tk.BOTH, expand=True)
 
-        self._title_item = self._settings_canvas.create_text(
-            0,
-            0,
-            text="Settings",
-            fill=c["text"],
-            font=("Segoe UI", 24, "bold"),
-            anchor="n",
-        )
+        self._title_item = None
 
         self._settings_buttons = {}
         self._settings_button_order = []
@@ -3121,13 +3118,11 @@ class SettingsWindow(tk.Toplevel):
             return
         s = self._s
         cw = max(10, int(self._settings_canvas.winfo_width()))
-        if self._title_item is not None:
-            self._settings_canvas.coords(self._title_item, cw // 2, s(34))
 
         if not getattr(self, "_settings_button_order", None):
             return
         x = cw // 2
-        y_start = s(116)
+        y_start = s(62)
         y_step = s(76)
         for idx, name in enumerate(self._settings_button_order):
             btn = self._settings_buttons.get(name)
@@ -3471,6 +3466,8 @@ class UISettingsWindow(tk.Toplevel):
         self._bg_source_image = None
         self._bg_photo = None
         self._bg_canvas_item = None
+        self._bg_cache_size = None
+        self._refresh_job = None
         self._canvas = tk.Canvas(self, bg=self._theme["bg"], highlightthickness=0, bd=0)
         self._canvas.pack(fill=tk.BOTH, expand=True)
         self._canvas.bind("<Configure>", self._on_canvas_resize)
@@ -3542,9 +3539,7 @@ class UISettingsWindow(tk.Toplevel):
 
         self._load_background_image()
         self.bind("<Configure>", self._on_resize)
-        self.after(30, self._refresh_scene)
-        self.after(120, self._refresh_scene)
-        self.after(220, self._apply_content_minsize)
+        self.after_idle(self._schedule_refresh)
 
     def _s(self, value: int | float) -> int:
         return max(1, int(round(float(value) * float(self._ui_scale))))
@@ -3573,14 +3568,23 @@ class UISettingsWindow(tk.Toplevel):
     def _on_resize(self, event=None):
         if event is not None and event.widget is not self:
             return
-        self._refresh_scene()
+        self._schedule_refresh()
 
     def _on_canvas_resize(self, event=None):
         if event is not None and event.widget is not self._canvas:
             return
-        self._refresh_scene()
+        self._schedule_refresh()
+
+    def _schedule_refresh(self):
+        if self._refresh_job is not None:
+            try:
+                self.after_cancel(self._refresh_job)
+            except Exception:
+                pass
+        self._refresh_job = self.after(12, self._refresh_scene)
 
     def _refresh_scene(self):
+        self._refresh_job = None
         self._refresh_background()
         self._layout_scene()
         self._apply_content_minsize()
@@ -3602,13 +3606,16 @@ class UISettingsWindow(tk.Toplevel):
         width = max(2, self._canvas.winfo_width())
         height = max(2, self._canvas.winfo_height())
         try:
-            fitted = ImageOps.fit(
-                self._bg_source_image,
-                (width, height),
-                method=Image.Resampling.LANCZOS,
-                centering=(0.5, 0.5),
-            )
-            self._bg_photo = ImageTk.PhotoImage(fitted)
+            target_size = (width, height)
+            if self._bg_photo is None or self._bg_cache_size != target_size:
+                fitted = ImageOps.fit(
+                    self._bg_source_image,
+                    target_size,
+                    method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.5),
+                )
+                self._bg_photo = ImageTk.PhotoImage(fitted)
+                self._bg_cache_size = target_size
             if self._bg_canvas_item is None:
                 self._bg_canvas_item = self._canvas.create_image(0, 0, anchor="nw", image=self._bg_photo)
             else:
@@ -3695,7 +3702,7 @@ class UISettingsWindow(tk.Toplevel):
         panel_x1 = (cw - panel_w) // 2
         panel_x2 = panel_x1 + panel_w
 
-        panel_y1 = s(74)
+        panel_y1 = s(44)
         panel_h = s(190)
         panel_y2 = panel_y1 + panel_h
         self._canvas.coords(self._settings_panel_item, panel_x1, panel_y1, panel_x2, panel_y2)
@@ -3706,8 +3713,8 @@ class UISettingsWindow(tk.Toplevel):
         self._canvas.coords(self._topmost_window, panel_x1 + s(16), panel_y1 + s(120))
         self._canvas.itemconfigure(self._topmost_window, width=panel_w - s(32), height=s(34))
 
-        y = panel_y2 + s(22)
-        gap = s(76)
+        y = panel_y2 + s(14)
+        gap = s(70)
         for name in self._button_order:
             btn = self._buttons.get(name)
             if not btn:
@@ -4453,14 +4460,7 @@ class RecordActionsWindow(tk.Toplevel):
         self._canvas = tk.Canvas(self, bg=self._theme["bg"], highlightthickness=0, bd=0)
         self._canvas.pack(fill=tk.BOTH, expand=True)
         self._canvas.bind("<Configure>", self._on_canvas_resize_background)
-        self._title_item = self._canvas.create_text(
-            0,
-            0,
-            text="Record Actions",
-            fill=self._theme["text"],
-            font=("Segoe UI", 24, "bold"),
-            anchor="n",
-        )
+        self._title_item = None
 
         self._buttons = {}
         self._button_order = []
@@ -4639,8 +4639,7 @@ class RecordActionsWindow(tk.Toplevel):
         s = self._s
         cw = max(2, self._canvas.winfo_width())
         x = cw // 2
-        self._canvas.coords(self._title_item, x, s(32))
-        y_start = s(126)
+        y_start = s(64)
         y_step = s(78)
         for idx, name in enumerate(self._button_order):
             btn = self._buttons.get(name)
