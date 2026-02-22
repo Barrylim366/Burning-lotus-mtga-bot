@@ -153,7 +153,7 @@ Standalone runnable UI example (single file): `burning_lotus_ui_example.py`.
   - Includes a **User Interface** button between **Record Action** and **Back**.
   - **User Interface** opens a settings window with:
     - `UI Scale` slider (50%..120%)
-    - `UI-Fenster im Vordergrund` toggle
+    - `Keep UI windows on top` toggle
     - both options styled in one highlighted yellow framed card (matching Current Session style)
   - On `Save`, UI scale is applied immediately in-app (no restart required).
   - Subwindow minimum sizes are now derived from actual visible content bounds to avoid clipping without forcing oversized windows.
