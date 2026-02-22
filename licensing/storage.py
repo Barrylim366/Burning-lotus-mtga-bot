@@ -8,6 +8,7 @@ APP_DIR_NAME_WINDOWS = "BurningLotusBot"
 APP_DIR_NAME_UNIX = "burninglotusbot"
 LICENSE_FILE_NAME = "license.bllic"
 STATUS_CACHE_FILE_NAME = "license_status.json"
+EMERGENCY_OVERRIDE_FILE_NAME = "emergency_override.json"
 
 
 def get_license_dir_path() -> Path:
@@ -28,6 +29,10 @@ def get_license_file_path() -> Path:
 
 def get_status_cache_path() -> Path:
     return get_license_dir_path() / STATUS_CACHE_FILE_NAME
+
+
+def get_emergency_override_path() -> Path:
+    return get_license_dir_path() / EMERGENCY_OVERRIDE_FILE_NAME
 
 
 def _ensure_dir(path: Path) -> None:
@@ -68,3 +73,34 @@ def save_status_cache(data: dict[str, Any]) -> Path:
     payload = data if isinstance(data, dict) else {}
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def load_emergency_override() -> dict[str, Any]:
+    path = get_emergency_override_path()
+    if not path.is_file():
+        return {}
+    try:
+        content = path.read_text(encoding="utf-8")
+        data = json.loads(content)
+        if isinstance(data, dict):
+            return data
+        return {}
+    except Exception:
+        return {}
+
+
+def save_emergency_override(data: dict[str, Any]) -> Path:
+    path = get_emergency_override_path()
+    _ensure_dir(path.parent)
+    payload = data if isinstance(data, dict) else {}
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def clear_emergency_override() -> None:
+    path = get_emergency_override_path()
+    if path.is_file():
+        try:
+            path.unlink()
+        except Exception:
+            pass

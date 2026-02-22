@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .codec import b64url_decode, canonical_json_bytes, canonical_json_dumps, parse_json_object
@@ -24,6 +24,10 @@ except Exception:
 
 PUBLIC_KEY_B64 = "V6hbI9Sxwy/4DApuvISJBDNYlecgliJkTiMYYJhTUSA="
 PUBLIC_KEY_ENV = "BLB_PUBLIC_KEY_B64"
+EMERGENCY_CODE_HASH_DEFAULT = "d193e7a2be71b625c0e44b2733f69b01962bd5339d55a7693beabadc2668a0af"  # BLB-NOTFALL-2026
+EMERGENCY_CODE_HASH_ENV = "BLB_EMERGENCY_CODE_SHA256"
+EMERGENCY_CODE_ENV = "BLB_EMERGENCY_CODE"
+EMERGENCY_CODE_DAYS_ENV = "BLB_EMERGENCY_CODE_DAYS"
 
 
 @dataclass(frozen=True)
@@ -125,6 +129,69 @@ def _parse_iso_datetime(value: Any) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _sha256_hex(value: str) -> str:
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
+
+
+def _resolve_emergency_code_hashes() -> set[str]:
+    hashes: set[str] = set()
+    hashes.add(EMERGENCY_CODE_HASH_DEFAULT)
+    env_hash = os.environ.get(EMERGENCY_CODE_HASH_ENV, "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", env_hash):
+        hashes.add(env_hash)
+    env_plain = os.environ.get(EMERGENCY_CODE_ENV, "").strip()
+    if env_plain:
+        hashes.add(_sha256_hex(env_plain))
+    return hashes
+
+
+def _resolve_emergency_days() -> int:
+    raw = os.environ.get(EMERGENCY_CODE_DAYS_ENV, "").strip()
+    try:
+        value = int(raw) if raw else 3
+    except Exception:
+        value = 3
+    return max(1, min(30, value))
+
+
+def _validate_emergency_override(now_utc: datetime, current_device_id: str) -> LicenseValidationResult:
+    data = storage.load_emergency_override()
+    if not isinstance(data, dict) or not data:
+        return _result(False, "no_emergency_override", "No emergency override found.", device_id=current_device_id)
+
+    expires_raw = data.get("expires_at")
+    activated_raw = data.get("activated_at")
+    code_hash = str(data.get("code_hash", "")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", code_hash):
+        storage.clear_emergency_override()
+        return _result(False, "invalid_emergency_override", "Emergency override is corrupt.", device_id=current_device_id)
+    try:
+        expires_at = _parse_iso_datetime(expires_raw)
+        activated_at = _parse_iso_datetime(activated_raw)
+    except Exception:
+        storage.clear_emergency_override()
+        return _result(False, "invalid_emergency_override", "Emergency override is corrupt.", device_id=current_device_id)
+
+    if now_utc > expires_at:
+        storage.clear_emergency_override()
+        return _result(False, "emergency_expired", "Emergency code expired.", device_id=current_device_id)
+
+    payload = {
+        "customer_id": "EMERGENCY",
+        "seat_index": "emergency",
+        "issued_at": activated_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "expires_at": expires_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "features": ["emergency_override"],
+    }
+    return _result(
+        True,
+        "emergency_ok",
+        "Emergency code active.",
+        payload=payload,
+        device_id=current_device_id,
+    )
 
 
 def parse_license_container(license_text: str) -> dict[str, str]:
@@ -291,6 +358,10 @@ def validate_installed_license(
     public_key_bytes: bytes | None = None,
     now: datetime | None = None,
 ) -> LicenseValidationResult:
+    now_utc = now.astimezone(timezone.utc) if isinstance(now, datetime) and now.tzinfo else (now or datetime.now(timezone.utc))
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+
     try:
         resolved_device_id = current_device_id or get_device_id()
     except Exception as exc:
@@ -301,6 +372,11 @@ def validate_installed_license(
     license_path = str(storage.get_license_file_path())
     raw = storage.load_license_text()
     if not raw or not raw.strip():
+        emergency_result = _validate_emergency_override(now_utc.astimezone(timezone.utc), resolved_device_id)
+        if emergency_result.valid:
+            emergency_result = replace(emergency_result, license_path=license_path)
+            _write_status_cache(emergency_result)
+            return emergency_result
         result = _result(
             False,
             "not_activated",
@@ -316,9 +392,63 @@ def validate_installed_license(
         current_device_id=resolved_device_id,
         public_key_b64=public_key_b64,
         public_key_bytes=public_key_bytes,
-        now=now,
+        now=now_utc,
     )
     result = replace(result, license_path=license_path)
+    if not result.valid:
+        emergency_result = _validate_emergency_override(now_utc.astimezone(timezone.utc), resolved_device_id)
+        if emergency_result.valid:
+            emergency_result = replace(emergency_result, license_path=license_path)
+            _write_status_cache(emergency_result)
+            return emergency_result
+    _write_status_cache(result)
+    return result
+
+
+def activate_emergency_code(
+    emergency_code: str,
+    *,
+    current_device_id: str | None = None,
+    now: datetime | None = None,
+) -> LicenseValidationResult:
+    try:
+        resolved_device_id = current_device_id or get_device_id()
+    except Exception as exc:
+        result = _result(False, "device_error", f"Could not determine device ID: {exc}")
+        _write_status_cache(result)
+        return result
+
+    code = (emergency_code or "").strip()
+    if not code:
+        result = _result(False, "invalid_emergency_code", "Emergency code is empty.", device_id=resolved_device_id)
+        _write_status_cache(result)
+        return result
+
+    code_hash = _sha256_hex(code)
+    valid_hashes = _resolve_emergency_code_hashes()
+    if code_hash not in valid_hashes:
+        result = _result(False, "invalid_emergency_code", "Emergency code is invalid.", device_id=resolved_device_id)
+        _write_status_cache(result)
+        return result
+
+    now_utc = now.astimezone(timezone.utc) if isinstance(now, datetime) and now.tzinfo else (now or datetime.now(timezone.utc))
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    expires_at = now_utc + timedelta(days=_resolve_emergency_days())
+    payload = {
+        "version": 1,
+        "activated_at": now_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "expires_at": expires_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "code_hash": code_hash,
+    }
+    try:
+        storage.save_emergency_override(payload)
+    except Exception as exc:
+        result = _result(False, "storage_error", f"Could not save emergency override: {exc}", device_id=resolved_device_id)
+        _write_status_cache(result)
+        return result
+
+    result = _validate_emergency_override(now_utc, resolved_device_id)
     _write_status_cache(result)
     return result
 
@@ -346,6 +476,7 @@ def activate_license_text(
         container = parse_license_container(license_text)
         normalized = canonical_json_dumps({"payload": container["payload"], "sig": container["sig"]})
         path = storage.save_license_text(normalized)
+        storage.clear_emergency_override()
         result = replace(result, license_path=str(path))
     except Exception as exc:
         result = _result(

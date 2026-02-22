@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 import time
 
 import pyautogui
@@ -13,6 +14,15 @@ def _default_player_log_path() -> str:
             home,
             "AppData",
             "LocalLow",
+            "Wizards Of The Coast",
+            "MTGA",
+            "Player.log",
+        )
+    if sys.platform == "darwin":
+        return os.path.join(
+            home,
+            "Library",
+            "Logs",
             "Wizards Of The Coast",
             "MTGA",
             "Player.log",

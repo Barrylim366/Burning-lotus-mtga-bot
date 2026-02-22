@@ -4,6 +4,7 @@ from Game import Game
 import time
 import os
 import pathlib
+import sys
 from licensing.validator import require_license_or_block
 
 
@@ -11,6 +12,8 @@ def _default_player_log_path() -> str:
     home = pathlib.Path.home()
     if os.name == "nt":
         return str(home / "AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log")
+    if sys.platform == "darwin":
+        return str(home / "Library/Logs/Wizards Of The Coast/MTGA/Player.log")
     return str(
         home
         / ".local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
@@ -34,6 +37,16 @@ def _detect_player_log_path() -> str:
         if candidates:
             candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             return str(candidates[0])
+        return _default_player_log_path()
+    if sys.platform == "darwin":
+        mac_candidates = [
+            pathlib.Path.home() / "Library/Logs/Wizards Of The Coast/MTGA/Player.log",
+            pathlib.Path.home() / "Library/Logs/Wizards Of The Coast/MTGA/Player-prev.log",
+        ]
+        found = [p for p in mac_candidates if p.is_file()]
+        if found:
+            found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return str(found[0])
         return _default_player_log_path()
 
     home = pathlib.Path.home()
@@ -115,7 +128,7 @@ def main():
     try:
         # Initialize components
         print(f"Initializing Controller with log path: {log_path}")
-        input_backend = os.environ.get("MTGA_BOT_INPUT_BACKEND", "pynput")  # "ydotool" / "pynput" / "auto"
+        input_backend = os.environ.get("MTGA_BOT_INPUT_BACKEND", "auto")  # "ydotool" / "pynput" / "pyautogui" / "auto"
         controller = Controller(
             log_path=log_path,
             screen_bounds=screen_bounds,
