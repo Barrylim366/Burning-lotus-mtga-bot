@@ -12,7 +12,7 @@ Automated MTGA bot with UI, calibration, account switching, and quest-based deck
   - opencv-python (needed for image matching confidence)
   - pillow
   - pynput
-  - cryptography (Ed25519 license verification)
+  - cryptography (ECDSA P-256 license token verification)
 
 Input backend:
 - Default is `auto`.
@@ -44,6 +44,7 @@ macOS one-click start:
 ```
 
 You can also double-click `start_ui.command` in Finder.
+The script creates `.venv-macos` automatically (if missing) and installs required packages on first run.
 
 UI assets are loaded from `images/`:
 - `images/ui_symbol.png`
@@ -159,84 +160,58 @@ Standalone runnable UI example (single file): `burning_lotus_ui_example.py`.
   - On `Save`, UI scale is applied immediately in-app (no restart required).
   - Subwindow minimum sizes are now derived from actual visible content bounds to avoid clipping without forcing oversized windows.
 
-5) Open **License**, copy your **Device ID**, import/paste your signed `.bllic`, then click **Aktivieren**.
+5) Open **License**, check your **Machine ID**, enter your **License Key**, then click **Activate**.
 
 6) Start Bot (only possible with valid activated license).
 
 Stop bot any time with **Mouse Wheel Down**.
 
-## Offline Licensing (Ed25519 + Device Binding)
+## Online Activation + Local Token Verification (ECDSA P-256)
 
 - Bot automation is blocked by default until a valid license is activated.
 - Main menu includes a **License** button with:
   - Status (`Activated` / `Not activated` + details)
-  - Local Device ID (copy button)
-  - License paste box
-  - `Import license file` + `Activate`
-  - `Emergency code` + `Activate emergency`
+  - Local Machine ID
+  - License key input + `Activate`
 - License check runs on app startup and again before bot start.
 - Without a valid license, **Start Bot** remains disabled and the UI shows a hint.
 
 Public key location:
-- Put your Ed25519 public key (raw 32-byte Base64/Base64URL) in `licensing/validator.py` at `PUBLIC_KEY_B64`.
-- Optional override for local testing: environment variable `BLB_PUBLIC_KEY_B64`.
+- Put your EC P-256 JWK in `config/public_key.jwk` (fields: `kty`, `crv`, `x`, `y`).
+- Optional overrides:
+  - `BLB_PUBLIC_JWK` (inline JSON string)
+  - `BLB_PUBLIC_JWK_FILE` (path to JSON file)
 
 Device binding:
-- `device_id` is derived from a stable OS fingerprint and encoded as Base32.
-- License payload uses `device_id_hash = SHA256(device_id)`.
+- `machineId` is derived from a stable OS fingerprint.
+- Activated token payload must match current:
+  - `lic` (license key)
+  - `mid` (machine id)
+  - `plat` (`win`/`mac`/`linux`)
+  - `exp` (unix expiry timestamp)
 
 Stored license path (per user):
-- Windows: `%APPDATA%/BurningLotusBot/license.bllic`
-- Linux: `~/.config/burninglotusbot/license.bllic`
-- macOS: `~/Library/Application Support/BurningLotusBot/license.bllic`
-
-Emergency override:
-- The UI can activate a temporary emergency override code.
-- Default emergency code: `BLB-NOTFALL-2026`
-- Default validity: 3 days (configurable via env `BLB_EMERGENCY_CODE_DAYS`, range 1..30)
-- Override code sources:
-  - `BLB_EMERGENCY_CODE` (plain text)
-  - `BLB_EMERGENCY_CODE_SHA256` (hash)
-- Stored at:
-  - Windows: `%APPDATA%/BurningLotusBot/emergency_override.json`
-  - Linux: `~/.config/burninglotusbot/emergency_override.json`
-  - macOS: `~/Library/Application Support/BurningLotusBot/emergency_override.json`
+- Windows: `%APPDATA%/BurningLotus/license.json`
+- Linux: `~/.config/burninglotus/license.json`
+- macOS: `~/Library/Application Support/BurningLotus/license.json`
 
 Validation checks:
-- Ed25519 signature valid
-- `product == BurningLotusBot`
-- `seat_index in {1,2}`
-- `device_id_hash` matches current machine
-- `expires_at` not expired (if set)
+- ECDSA signature valid for token payload
+- Payload/license key matches local activated key
+- Payload machine id matches current machine
+- Payload platform matches current platform
+- Token is not expired
 
 Typical error messages:
-- `Invalid signature`
-- `Wrong device`
-- `Expired`
-- `Wrong product`
-- `Corrupt file`
+- `signature_invalid`
+- `machine_mismatch`
+- `platform_mismatch`
+- `token_expired`
+- `crypto_missing`
+- `key_error`
 
-Developer license generator (not shipped at runtime):
-- Script: `tools/gen_license.py`
-- UI helper: `tools/ui_licensing.py` (paste Device ID + private key, generate compact license string, save `.bllic`)
-- `tools/ui_licensing.py` now opens even if crypto backends are missing and shows a clear warning (`cryptography` or `pynacl` required for signing).
-- Private key source:
-  - `BLB_PRIVATE_KEY_B64` environment variable, or
-  - `--private-key-file <path>` (raw/base64/PEM)
-- Supported argument styles: kebab-case and snake_case (for example `--customer-id` / `--customer_id`).
-- Example:
-
-```bash
-python tools/gen_license.py --customer-id CUST001 --device-id ABCDEFGHIJKLMNOPQRSTUVWX234567 --seat-index 1 --expires-at 2027-01-01T00:00:00Z --out CUST001_seat1.bllic --print
-```
-
-UI example:
-
-```bash
-python tools/ui_licensing.py
-```
-
-`tools/` is not included in runtime packaging because builds target `ui.py` only and do not add `tools/` as data.
+Legacy note:
+- `tools/gen_license.py` and `tools/ui_licensing.py` belong to an older offline `.bllic` workflow and are not used by the runtime activation path in this build.
 
 ## Windows EXE Build
 
