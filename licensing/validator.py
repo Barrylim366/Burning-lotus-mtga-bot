@@ -193,6 +193,7 @@ def _reason_message(code: str) -> str:
         "platform_mismatch": "License token belongs to a different platform.",
         "token_expired": "License token is expired.",
         "license_mismatch": "Stored license key does not match token payload.",
+        "crypto_missing": "Required package 'cryptography' is missing.",
         "key_error": "Public key is not configured correctly.",
         "network_error": "License activation network error.",
         "activation_failed": "License activation failed.",
@@ -242,6 +243,12 @@ def verifyLocalToken(
 
     try:
         signature_ok = _verify_signature(payload_b64, sig_raw)
+    except RuntimeError as exc:
+        if "cryptography package is missing" in str(exc).lower():
+            logger.warning("license verify failed: crypto_missing")
+            return _result(False, "crypto_missing", _reason_message("crypto_missing"), device_id=machine, license_path=license_path)
+        logger.warning("license verify failed: key_error")
+        return _result(False, "key_error", _reason_message("key_error"), device_id=machine, license_path=license_path)
     except Exception:
         logger.warning("license verify failed: key_error")
         return _result(False, "key_error", _reason_message("key_error"), device_id=machine, license_path=license_path)
