@@ -2681,7 +2681,9 @@ class MTGBotUI(tk.Tk):
             total_h += body_h + sp["xs"] + loading_bar_h + sp["md"]
         total_h += sp["lg"] + body_h
         max_content_y = (canvas_h - footer_h) - footer_gap - total_h
-        y = max(sp["outer_margin"], min((canvas_h - total_h) // 2, max_content_y))
+        # Pull the whole main stack slightly upward (~1 cm) to reduce top logo whitespace.
+        top_offset = int(self.winfo_fpixels("10m"))
+        y = max(0, min((canvas_h - total_h) // 2, max_content_y) - top_offset)
 
         if self._logo_item is not None:
             self._card_canvas.coords(self._logo_item, center_x, y)

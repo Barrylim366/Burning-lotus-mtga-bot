@@ -140,6 +140,7 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Fixed a startup regression in `ui.py` caused by a mismatched theme token in the loading bar style
 - `Status: Stopped` now uses `#ffb02a`
 - Main UI now includes a bottom footer bar with the `Keep Window on Top` checkbox; the bar is flush to the left/right/bottom edges, the checkbox is centered with a yellow `X` indicator, and it does not overlap with the startup `Loading Carddata` area
+- Main UI top spacing was tightened by about 1 cm so the logo sits higher with less empty space above it
 
 Standalone runnable UI example (single file): `burning_lotus_ui_example.py`.
 
