@@ -16,6 +16,7 @@ if errorlevel 1 (
 
 echo [2/4] Preparing data include arguments...
 set "DATA_ARGS="
+set "DATA_ARGS=!DATA_ARGS! --include-data-dir=assets=assets"
 set "DATA_ARGS=!DATA_ARGS! --include-data-dir=images=images"
 set "DATA_ARGS=!DATA_ARGS! --include-data-dir=Buttons=Buttons"
 set "DATA_ARGS=!DATA_ARGS! --include-data-files=cards.json=cards.json"
@@ -24,17 +25,30 @@ set "DATA_ARGS=!DATA_ARGS! --include-data-files=missing_cards.json=missing_cards
 set "DATA_ARGS=!DATA_ARGS! --include-data-files=scryfall_cache.json=scryfall_cache.json"
 set "DATA_ARGS=!DATA_ARGS! --include-data-files=scryfall_oracle_cache.json=scryfall_oracle_cache.json"
 set "DATA_ARGS=!DATA_ARGS! --include-data-files=scryfall_bulk_metadata.json=scryfall_bulk_metadata.json"
-set "DATA_ARGS=!DATA_ARGS! --include-data-files=calibration_config.json=calibration_config.json"
+set "SANITIZED_CONFIG=%CD%\_build_calibration_config.json"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$p = Join-Path (Get-Location) 'calibration_config.json';" ^
+  "if (Test-Path $p) {" ^
+  "  $raw = Get-Content -Raw -Path $p | ConvertFrom-Json;" ^
+  "  if ($null -eq $raw.managed_accounts) { $raw | Add-Member -NotePropertyName managed_accounts -NotePropertyValue @() -Force } else { $raw.managed_accounts = @() };" ^
+  "  $raw | ConvertTo-Json -Depth 100 | Set-Content -Encoding UTF8 -Path '%SANITIZED_CONFIG%';" ^
+  "} else {" ^
+  "  '{}' | Set-Content -Encoding UTF8 -Path '%SANITIZED_CONFIG%';" ^
+  "}"
+set "DATA_ARGS=!DATA_ARGS! --include-data-files=%SANITIZED_CONFIG%=calibration_config.json"
 set "DATA_ARGS=!DATA_ARGS! --include-data-files=config/public_key.jwk=config/public_key.jwk"
 if exist "recorded_actions_records.json" (
   set "DATA_ARGS=!DATA_ARGS! --include-data-files=recorded_actions_records.json=recorded_actions_records.json"
 ) else (
-  echo Note: recorded_actions_records.json not found, skipping include.
+  echo ERROR: recorded_actions_records.json not found.
+  echo This customer build is expected to ship with recorded actions.
+  exit /b 1
 )
 
 echo [3/4] Building BurningLotusBot.exe with Nuitka (standalone)...
 python -m nuitka ^
   --standalone ^
+  --remove-output ^
   --assume-yes-for-downloads ^
   --windows-console-mode=disable ^
   --enable-plugin=tk-inter ^
@@ -48,6 +62,7 @@ if errorlevel 1 (
   echo Standard compiler path failed. Retrying with Zig backend...
   python -m nuitka ^
     --standalone ^
+    --remove-output ^
     --assume-yes-for-downloads ^
     --windows-console-mode=disable ^
     --enable-plugin=tk-inter ^
@@ -67,5 +82,6 @@ echo [4/4] Build complete.
 echo Executable: dist_nuitka\ui.dist\BurningLotusBot.exe
 echo.
 echo Copy the whole folder "dist_nuitka\ui.dist" to another Windows laptop.
+if exist "%SANITIZED_CONFIG%" del /f /q "%SANITIZED_CONFIG%" >nul 2>&1
 
 endlocal
