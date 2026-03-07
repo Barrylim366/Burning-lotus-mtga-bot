@@ -70,24 +70,15 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Manage Accounts now uses the same background image source as the main UI (`images/background` / `images/background.png`)
 - Manage Accounts panel colors now follow the main UI palette (`bg/surface/surface_2/border/text`) with a subtle pseudo-transparency blend against the background image
 - Manage Accounts container borders were tuned from cool-blue to warm red tones; panel blend opacity was reduced for a lighter translucent look on the fire background
-- Main menu now includes a dedicated **Current Session** button between **Calibrate** and **Settings**
+- Main menu keeps **Current Session** and **Settings** as the only submenu entries
 - **Current Session** opens in the same submenu position logic as **Settings** (below main window, ~5 mm gap, aligned X)
 - Current session stats (`X Min till Account Switch`, `Games played`, `Win`) were moved out of **Settings** into **Current Session**
 - Settings window keeps the main menu visual language: same background image source, centered title, and canvas-rendered action buttons using the shared main button skins
 - Settings window size/position follows submenu behavior (`460x430`, opens below main with ~5 mm gap, aligned to main window X)
-- Calibrate window now uses a background-scene layout like Settings/Record Actions (no large dark outer frame), keeps glow-style action buttons, and opens to the right of the main window with ~0.4 cm gap
-- Calibrate action buttons were reflowed to remove overlap artifacts
-- Calibrate window now follows a split `Capture` / `Verify` scene layout with a vertical divider, `Last Captured` coordinate card, dedicated `Status` card, and footer action row (`Saved Buttons`, `Back`)
-- Calibrate button sizes and visual styles remain unchanged from the existing bot theme
-- Fixed a Calibrate auto-resize loop by excluding full-canvas footer/background elements from content-based min-size calculation (prevents slow fullscreen growth and text overlap distortion)
-- Fixed remaining vertical growth loop by anchoring Calibrate scene/footer Y-layout to fixed scaled design coordinates (no height-coupled relayout feedback)
-- Calibrate vertical spacing was tuned so the `Advanced Calibration` title no longer collides with the `Capture/Verify` section headings
-- Calibrate window height was increased and the top `Advanced Calibration` title was removed; freed top space is now used by the main capture/verify content to prevent overlaps
-- Added defensive Calibrate layout guards so early canvas resize events cannot trigger attribute errors during widget initialization
-- Calibrate window geometry is now hard-locked (`minsize == maxsize`) and dynamic content-fit resizing is disabled to prevent any remaining downward drift/stretch behavior
-- Removed Calibrate field labels `Button Target:` and `Select for Test:` for a cleaner compact layout
-- Calibrate/Verify panel spacing is now symmetrical: distance from top action buttons to panel equals distance from panel bottom to footer action buttons
-- Top Calibrate action buttons (`Calibrate`, `Test Click`) now use the same centered two-button alignment model as the footer row to remove right-shift
+- **Calibrate** now lives inside **Settings**
+- Calibrate uses a background-scene layout like Settings/Record Actions (no large dark outer frame), keeps glow-style action buttons, and opens to the right of Settings with ~0.4 cm gap
+- Calibrate follows a split `Capture` / `Verify` scene layout with a vertical divider, `Last Captured` coordinate card, dedicated `Status` card, and footer action row (`Saved Buttons`, `Back`)
+- Calibrate remains a fallback path for manual coordinate capture when the out-of-the-box arena detection/verification path is not enough
 - Current Session window was restyled to the same fire/main theme (background image, unified panel colors, styled Back button) and now opens aligned below the main window
 - Current Session no longer uses a large dark container frame; stats and Back are rendered directly on the background scene, and the dark box-frame around Back was removed
 - Current Session stats are now grouped inside a bordered feature-card (`#320a02` fill, `#ff9318` border) with title/body typography aligned to the provided feature-box style
@@ -111,6 +102,7 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Manage Accounts rows now use subtle dark list cards with a clearer selected-row highlight instead of heavy section boxes
 - Manage Accounts list rows/inputs were flattened further: row borders and input/dropdown frames are removed for a cleaner, less boxed appearance
 - Manage Accounts account-row selection is now indicated by text emphasis/color instead of a framed row border
+- Manage Accounts uses a clickable account table plus inline `Name` / `Email` / `Password` editor fields below the table instead of a separate side editor
 - Manage Accounts now uses a canvas-first scene layout (like the main window) for titles/table text and button placement, removing large frame-based panel backgrounds
 - Manage Accounts default window size was increased to `900x980` to avoid right/bottom clipping with the canvas layout
 - Manage Accounts action buttons are now flat no-border buttons (no glow-frame outline) to remove remaining visible button borders
@@ -118,7 +110,7 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Manage Accounts input fields (`Switch account`, `Name`, `Email`, `Password`) and `Remember password` checkbox now share the same dark-red control tone as the play-order dropdowns
 - Fixed Manage Accounts entry rendering so those fields now actually use `entry_bg` (dark-red) instead of falling back to the window background
 - Manage Accounts now includes two feature-style translucent group boxes (yellow border, dark-red RGBA fill) around the accounts list area and the account play-order area
-- Manage Accounts no longer shows the `Active` marker and no longer includes the `Account Details` editor section on the right side
+- Manage Accounts no longer shows the `Active` marker and no longer includes the old right-side `Account Details` editor section
 - Manage Accounts window width is now compact and sized to the left-side content area with a small margin
 - Manage Accounts now has a dedicated top `Switch account` group box in the same yellow bordered translucent style as the other manage groups
 - The top switch action button was renamed to `Save Time` and moved to the lower-left area inside that switch group box
@@ -126,10 +118,10 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Switch group height was increased and `Save Time` moved lower to avoid overlap with the switch label line
 - Manage Accounts window was widened slightly and group boxes are now inset with more symmetric left/right spacing
 - Saving accounts creates/updates one folder per account under `Accounts/` and writes `credentials.json` inside that folder
-- **Manage Accounts** now uses a split panel: account table on the left, `Account Details` editor on the right
-- Row selection is clickable; selected row gets highlight and the active cycling account is marked with an `Active` badge
+- Account credentials are no longer stored in `calibration_config.json`; `Manage Accounts` reloads them from the per-account `Accounts/<folder>/credentials.json` files
+- Row selection is clickable; the selected row gets highlight and its values are editable in the inline detail fields below the table
 - Password fields in **Manage Accounts** are masked (`*`) while typing
-- `Save Account` updates the selected row, `Save Accounts` persists all valid rows to config/folders
+- `Save Row` updates the selected row in memory, `Save Accounts` persists all valid rows to config/folders
 - Play order is now shown as a 5-slot priority list (dropdowns) under the table section
 - Manage Accounts window width is auto-fitted to content with a small right margin
 - The former global dark content wrapper around all Manage Accounts blocks was removed; sections are now laid directly on the background with only left padding
@@ -167,12 +159,13 @@ The bot now runs in an out-of-the-box mode using:
 The runtime tries to locate MTGA dynamically:
 
 - First via OS window rectangle detection
+- On Windows, the setup check now uses the MTGA client area from Win32 instead of border-offset heuristics
 - Then verifies/fallbacks with visual anchor checks
 - Stores a session `arena_region` and re-acquires it on repeated verification failures
 - Opponent avatar target selection uses the same direct 1920-relative mapping path as other calibrated points (`_map_abs_point_to_arena`), without avatar-specific fallback heuristics
 
 
-2) Calibrate buttons via **Calibrate**:
+2) Use **Settings -> Calibrate** only if manual coordinate fallback is needed:
    - **Optional** for normal usage.
    - Use this only as advanced/support fallback when repeated button verification fails.
    - Windows/Linux: calibration uses `pynput`.
@@ -187,14 +180,15 @@ The runtime tries to locate MTGA dynamically:
 4) Settings:
    - **Manage Accounts** opens a window for:
      - **Switch account (min)**
-     - Up to **10 accounts** (`Name`, `Email`, `Password`)
+     - Up to **10 accounts** (`Name`, `Email`, `Password`) with clickable row selection and inline detail fields below the table
      - **Account Play Order** (up to 10 positions)
+   - Use **Save Row** to update the currently selected row in memory.
    - Use **Save Accounts** to create/update account folders and credentials JSONs.
    - Use **Save Order** to persist the play order.
    - **Record Action** opens a window for **Record** (uses F8 to stop) and **Show Records**.
      Saved records include per-action timestamps (`ts`) in `recorded_actions_records.json`.
-  - Includes a **User Interface** button between **Record Action** and **Back**.
-  - Opening any Settings subwindow (**Manage Accounts**, **Record Action**, **User Interface**) temporarily replaces the Settings window at the same screen position.
+  - Includes **Calibrate** and **User Interface** buttons.
+  - Opening any Settings subwindow (**Manage Accounts**, **Record Action**, **Calibrate**, **User Interface**) temporarily replaces the Settings window at the same screen position.
   - **User Interface** opens a settings window with:
     - `UI Scale` slider (50%..120%)
     - `UI Scale` control is vertically centered/lower in the panel for clearer spacing
@@ -202,19 +196,17 @@ The runtime tries to locate MTGA dynamically:
   - On `Save`, UI scale is applied immediately in-app (no restart required).
   - Subwindow minimum sizes are now derived from actual visible content bounds to avoid clipping without forcing oversized windows.
 
-5) Open **License**, check your **Machine ID**, enter your **License Key**, then click **Activate**.
+5) If no valid license is active, the app prompts for your **License Key** automatically on startup or before bot start.
 
 6) Start Bot (only possible with valid activated license).
+   - Before the bot starts, the app checks that MTGA is visible with an exact windowed `1920x1080` client area and that Windows display scaling is `100%`.
+   - If that check fails, the app writes an Arena setup debug bundle with diagnostics and screenshots.
 
-Stop bot any time with **Mouse Wheel Down**.
+Stop bot any time with **Mouse Wheel**.
 
 ## Online Activation + Local Token Verification (ECDSA P-256)
 
 - Bot automation is blocked by default until a valid license is activated.
-- Main menu includes a **License** button with:
-  - Status (`Activated` / `Not activated` + details)
-  - Local Machine ID
-  - License key input + `Activate`
 - License check runs on app startup and again before bot start.
 - Runtime checks now include periodic online re-validation against `https://burninglotusbot.com/api/validate-license`.
 - Without a valid license, **Start Bot** remains disabled and the UI shows a hint.
@@ -269,41 +261,12 @@ Typical error messages:
 Legacy note:
 - `tools/gen_license.py` and `tools/ui_licensing.py` belong to an older offline `.bllic` workflow and are not used by the runtime activation path in this build.
 
-## Windows EXE Build
+## Windows Build (Nuitka)
 
-Create Windows executables with your logo as file icon (`burning_lotus_icon.ico`).
-
-1) Install PyInstaller once:
-
-```bash
-python -m pip install pyinstaller
-```
-
-2) Build app folder (recommended):
-
-```bat
-build_windows_exe.bat
-```
-
-3) Output (folder build):
-
-- `dist/BurningLotusBot/BurningLotusBot.exe`
-- For distribution, copy the whole folder `dist/BurningLotusBot` to the target laptop.
-
-4) Build single-file `.exe`:
-
-```bat
-build_windows_exe_onefile.bat
-```
-
-5) Output (single-file build):
-
-- `dist/BurningLotusBot.exe`
-- For distribution, copy just this one file.
-
-## Windows EXE Build (Nuitka)
-
-Use Nuitka for a compiled standalone Windows build (harder to reverse than plain Python bytecode shipping).
+This branch ships a Windows-only build path. Use Nuitka for a compiled standalone Windows build.
+The build script bundles the runtime verify templates from `assets/assert` so the packaged app keeps arena-window auto-detection and verification.
+The build script also sanitizes `managed_accounts` out of the bundled `calibration_config.json` so local Manage Accounts credentials are not shipped inside customer builds.
+The build also requires and includes `recorded_actions_records.json`; if that file is missing, the build aborts so customer packages do not ship without the expected recorded actions.
 
 1) Install prerequisites:
 
@@ -329,57 +292,12 @@ build_windows_nuitka.bat
 - `dist_nuitka/ui.dist/BurningLotusBot.exe`
 - For distribution, copy the whole folder `dist_nuitka/ui.dist`.
 
-## macOS Build (Nuitka)
-
-1) Install prerequisites:
-
-```bash
-python3 -m pip install nuitka ordered-set zstandard
-```
-
-2) Build:
-
-```bash
-chmod +x build_macos_nuitka.sh
-./build_macos_nuitka.sh
-```
-
-3) Output:
-
-- `dist_nuitka/ui.dist/BurningLotusBot`
-- Distribute the whole folder `dist_nuitka/ui.dist`.
-
-## Linux Build (Nuitka)
-
-1) Install prerequisites:
-
-```bash
-python3 -m pip install nuitka ordered-set zstandard
-```
-
-2) Build:
-
-```bash
-chmod +x build_linux_nuitka.sh
-./build_linux_nuitka.sh
-```
-
-3) Output:
-
-- `dist_nuitka/ui.dist/BurningLotusBot`
-- Distribute the whole folder `dist_nuitka/ui.dist`.
-
-## PyInstaller Status
-
-- PyInstaller can remain as fallback for quick packaging/troubleshooting.
-- Nuitka is now the recommended production build path for stronger code hardening.
-
-
 ## Account Switching
 
 - Accounts are managed via **Settings -> Manage Accounts**.
 - Each account is saved in its own folder under `Accounts/` and includes `credentials.json` in this format:
   - `{ "<AccountName>": { "email": "...", "pw": "..." } }`
+- `calibration_config.json` no longer stores managed account credentials; the UI reloads accounts by scanning the account folders.
 - `Accounts/` is gitignored by default so local account folders are not pushed to GitHub.
 - Switch happens when the timer expires and the bot reaches a safe screen.
 - Logout/login uses recorded action sequence + credentials injection.

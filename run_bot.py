@@ -138,9 +138,8 @@ def main():
         }
     }
 
-    # Estimated screen bounds based on coordinates (assuming 2560x1440 or similar)
-    # This is important for card casting relative positions
-    screen_bounds = ((0, 0), (2560, 1440))
+    # Windows branch assumes MTGA is running windowed at 1920x1080 with 100% display scaling.
+    screen_bounds = ((0, 0), (1920, 1080))
 
     try:
         # Initialize components

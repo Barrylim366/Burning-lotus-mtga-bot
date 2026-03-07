@@ -10,6 +10,7 @@ import json
 import threading
 from Controller.Utilities.input_controller import InputControllerError, create_input_controller
 from licensing.validator import LicenseValidationResult, activateOnline, ensureLicensedOrExit, require_license_or_block
+from vision.window_locator import ArenaDetectionResult, run_arena_setup_check
 
 # Import bot components
 from Controller.MTGAController.Controller import Controller
@@ -382,18 +383,22 @@ def _apply_submenu_theme(window):
 class CalibrationWindow(tk.Toplevel):
     """Calibration submenu window"""
 
-    def __init__(self, parent, config_manager):
+    def __init__(self, parent, config_manager, spawn_xy: tuple[int, int] | None = None, on_close=None):
         super().__init__(parent)
         self.parent = parent
+        self._on_close_callback = on_close
         self.config_manager = config_manager
         self._ui_scale = _get_ui_scale_from_widget(parent)
         self.title("Calibrate")
         # Increased width from 640 to 760 for more breathing room
         width, height = self._s(760), self._s(680)
-        gap_px = int(parent.winfo_fpixels("4m"))  # ~0.4 cm
         parent.update_idletasks()
-        x = parent.winfo_x() + parent.winfo_width() + gap_px
-        y = parent.winfo_y()
+        if spawn_xy is not None:
+            x, y = int(spawn_xy[0]), int(spawn_xy[1])
+        else:
+            gap_px = int(parent.winfo_fpixels("4m"))  # ~0.4 cm
+            x = parent.winfo_x() + parent.winfo_width() + gap_px
+            y = parent.winfo_y()
         max_x = max(0, self.winfo_screenwidth() - width)
         max_y = max(0, self.winfo_screenheight() - height)
         x = min(max(0, x), max_x)
@@ -1245,8 +1250,16 @@ class CalibrationWindow(tk.Toplevel):
         SavedButtonsWindow(self, self.config_manager)
 
     def destroy(self):
-        self._stop_calibration()
-        super().destroy()
+        callback = getattr(self, "_on_close_callback", None)
+        try:
+            self._stop_calibration()
+            super().destroy()
+        finally:
+            if callable(callback):
+                try:
+                    callback()
+                except Exception:
+                    pass
 
 
 class SavedButtonsWindow(tk.Toplevel):
@@ -1448,7 +1461,15 @@ class ConfigManager:
             try:
                 with open(self.config_path, "r") as f:
                     loaded = json.load(f)
-                return self._ensure_defaults(loaded)
+                had_managed_accounts = bool(loaded.get("managed_accounts"))
+                config = self._ensure_defaults(loaded)
+                if had_managed_accounts and not config.get("managed_accounts"):
+                    try:
+                        with open(self.config_path, "w") as f:
+                            json.dump(config, f, indent=4)
+                    except Exception:
+                        pass
+                return config
             except (json.JSONDecodeError, IOError):
                 return self._default_config()
         return self._default_config()
@@ -1482,6 +1503,15 @@ class ConfigManager:
             }
         }
 
+    def _sanitize_managed_accounts_storage(self, config: dict) -> bool:
+        if not isinstance(config, dict):
+            return False
+        current = config.get("managed_accounts", [])
+        if current == []:
+            return False
+        config["managed_accounts"] = []
+        return True
+
     def _ensure_defaults(self, config):
         defaults = self._default_config()
 
@@ -1507,6 +1537,7 @@ class ConfigManager:
                 click_targets.pop("log_in_btn", None)
         except Exception:
             pass
+        self._sanitize_managed_accounts_storage(config)
         return config
 
     def _save_config(self):
@@ -1553,7 +1584,7 @@ class ConfigManager:
         return self._detect_player_log_path()
 
     def get_screen_bounds(self):
-        bounds = self.config.get("screen_bounds", [[0, 0], [2560, 1440]])
+        bounds = self.config.get("screen_bounds", [[0, 0], [1920, 1080]])
         return tuple(tuple(b) for b in bounds)
 
     def get_input_backend(self):
@@ -1617,6 +1648,19 @@ class ConfigManager:
         os.makedirs(root, exist_ok=True)
         return root
 
+    def _account_scan_dirs(self) -> list[str]:
+        dirs = [self._accounts_root(), self._repo_root()]
+        cleaned = []
+        seen = set()
+        for path in dirs:
+            full = os.path.abspath(path)
+            key = full.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(full)
+        return cleaned
+
     def _sanitize_folder_name(self, name: str) -> str:
         cleaned = []
         for ch in (name or "").strip():
@@ -1639,39 +1683,79 @@ class ConfigManager:
                 return trial
             i += 1
 
-    def get_managed_accounts(self) -> list[dict]:
-        raw = self.config.get("managed_accounts", [])
-        if not isinstance(raw, list):
+    def _load_managed_accounts_from_dirs(self) -> list[dict]:
+        accounts = []
+        seen_folders = set()
+        try:
+            for base_dir in self._account_scan_dirs():
+                if not os.path.isdir(base_dir):
+                    continue
+                for entry in os.listdir(base_dir):
+                    full = os.path.join(base_dir, entry)
+                    if not os.path.isdir(full):
+                        continue
+                    entry_key = entry.casefold()
+                    if entry_key in seen_folders:
+                        continue
+                    creds_path = os.path.join(full, "credentials.json")
+                    if not os.path.isfile(creds_path):
+                        continue
+                    try:
+                        with open(creds_path, "r", encoding="utf-8") as f:
+                            payload = json.load(f)
+                    except Exception:
+                        continue
+                    if not isinstance(payload, dict) or not payload:
+                        continue
+                    account_name = str(next(iter(payload.keys()))).strip()
+                    details = payload.get(account_name, {})
+                    if not isinstance(details, dict):
+                        continue
+                    email = str(details.get("email", "")).strip()
+                    pw = str(details.get("pw", "")).strip()
+                    if not account_name or not email or not pw:
+                        continue
+                    accounts.append(
+                        {
+                            "name": account_name,
+                            "email": email,
+                            "pw": pw,
+                            "folder": entry,
+                        }
+                    )
+                    seen_folders.add(entry_key)
+        except Exception:
             return []
-        cleaned = []
-        for item in raw:
-            if not isinstance(item, dict):
+        accounts.sort(key=lambda item: str(item.get("name", "")).casefold())
+        return accounts[:10]
+
+    def _remove_account_credentials(self, folder: str) -> None:
+        folder_name = str(folder or "").strip()
+        if not folder_name:
+            return
+        for base_dir in self._account_scan_dirs():
+            creds_path = os.path.join(base_dir, folder_name, "credentials.json")
+            try:
+                if os.path.isfile(creds_path):
+                    os.remove(creds_path)
+            except Exception:
                 continue
-            name = str(item.get("name", "")).strip()
-            email = str(item.get("email", "")).strip()
-            pw = str(item.get("pw", "")).strip()
-            folder = str(item.get("folder", "")).strip()
-            if not name:
-                continue
-            cleaned.append({
-                "name": name,
-                "email": email,
-                "pw": pw,
-                "folder": folder,
-            })
-        return cleaned[:10]
+
+    def get_managed_accounts(self) -> list[dict]:
+        return self._load_managed_accounts_from_dirs()
 
     def save_managed_accounts(self, accounts: list[dict]) -> list[dict]:
         if not isinstance(accounts, list):
             return self.get_managed_accounts()
         normalized = []
         seen_names = set()
+        existing_accounts = self.get_managed_accounts()
         existing_by_name = {
             str(acc.get("name", "")).casefold(): str(acc.get("folder", "")).strip()
-            for acc in self.get_managed_accounts()
+            for acc in existing_accounts
             if isinstance(acc, dict) and str(acc.get("name", "")).strip()
         }
-        used_folders = {str(acc.get("folder", "")).strip() for acc in self.get_managed_accounts()}
+        used_folders = {str(acc.get("folder", "")).strip() for acc in existing_accounts}
         used_folders = {name for name in used_folders if name}
 
         for item in accounts[:10]:
@@ -1710,7 +1794,14 @@ class ConfigManager:
                 "folder": folder,
             })
 
-        self.config["managed_accounts"] = normalized
+        active_folders = {str(acc.get("folder", "")).strip() for acc in normalized if str(acc.get("folder", "")).strip()}
+        for existing in existing_accounts:
+            folder = str(existing.get("folder", "")).strip()
+            if not folder or folder in active_folders:
+                continue
+            self._remove_account_credentials(folder)
+
+        self.config["managed_accounts"] = []
         valid = {acc["name"].casefold() for acc in normalized}
         order = [x for x in self.get_account_play_order() if x.casefold() in valid]
         self.config["account_play_order"] = order
@@ -2050,7 +2141,6 @@ class MTGBotUI(tk.Tk):
             self._open_settings()
             if should_reopen_ui_settings:
                 self._open_ui_settings()
-
     def _suppress_tk_default_icon(self):
         try:
             icon_path = _image_path("ui_symbol.png")
@@ -2072,7 +2162,7 @@ class MTGBotUI(tk.Tk):
             pass
 
     def _setup_stop_hotkey(self):
-        # Global hotkey via pynput (mouse wheel down).
+        # Global hotkey via pynput (mouse wheel).
         try:
             from pynput import mouse
         except Exception:
@@ -2603,8 +2693,7 @@ class MTGBotUI(tk.Tk):
         self._menu_buttons: dict[str, dict] = {}
         self._menu_button_order: list[str] = []
         self._create_canvas_menu_button("start", "Start Bot", "Primary.TButton", self._start_bot, enabled=True)
-        self._create_canvas_menu_button("stop", "Stop Bot [Wheel Down]", "Destructive.TButton", self._stop_bot, enabled=False)
-        self._create_canvas_menu_button("calibrate", "Calibrate", "Secondary.TButton", self._open_calibration, enabled=True)
+        self._create_canvas_menu_button("stop", "Stop Bot [Mouse Wheel]", "Destructive.TButton", self._stop_bot, enabled=False)
         self._create_canvas_menu_button("current_session", "Current Session", "Secondary.TButton", self._open_current_session, enabled=True)
         self._create_canvas_menu_button("settings", "Settings", "Secondary.TButton", self._open_settings, enabled=True)
 
@@ -2781,7 +2870,6 @@ class MTGBotUI(tk.Tk):
         if running:
             self._set_canvas_menu_button_enabled("start", False)
             self._set_canvas_menu_button_enabled("stop", True)
-            self._set_canvas_menu_button_enabled("calibrate", False)
             self._card_canvas.itemconfigure(
                 self._status_text_item,
                 text="Status: Running",
@@ -2791,7 +2879,6 @@ class MTGBotUI(tk.Tk):
 
         self._set_canvas_menu_button_enabled("start", bool(self._license_active))
         self._set_canvas_menu_button_enabled("stop", False)
-        self._set_canvas_menu_button_enabled("calibrate", True)
         status_text = "Status: Stopped" if self._license_active else "Status: License Required"
         self._card_canvas.itemconfigure(
             self._status_text_item,
@@ -2869,6 +2956,10 @@ class MTGBotUI(tk.Tk):
             )
             return
 
+        setup_ok = self._run_arena_setup_check(show_success=False)
+        if not setup_ok:
+            return
+
         self.bot_running = True
         self._set_running_state(True)
         self._set_startup_loading(True)
@@ -2905,6 +2996,73 @@ class MTGBotUI(tk.Tk):
                 parent=self,
             )
             last = activated
+
+    def _check_arena_setup(self):
+        self._run_arena_setup_check(show_success=True)
+
+    def _run_arena_setup_check(self, *, show_success: bool) -> bool:
+        try:
+            result = run_arena_setup_check(
+                assets_dir=_app_path("assets", "assert"),
+                expected_size=(1920, 1080),
+                write_debug_on_fail=True,
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Arena Setup",
+                f"Arena setup check failed unexpectedly.\n\n{exc}",
+                parent=self,
+            )
+            return False
+
+        if result.ok:
+            self._handle_arena_setup_success(result, show_success=show_success)
+            return True
+
+        self._handle_arena_setup_failure(result)
+        return False
+
+    def _handle_arena_setup_success(self, result: ArenaDetectionResult, *, show_success: bool) -> None:
+        try:
+            self._card_canvas.itemconfigure(
+                self._status_text_item,
+                text="Status: Arena Ready",
+                fill=self.ui_theme["colors"]["status_stopped_text"],
+            )
+        except Exception:
+            pass
+        if not show_success:
+            return
+
+        region_text = "unknown"
+        if result.region is not None:
+            region_text = f"{result.region[0]},{result.region[1]} {result.region[2]}x{result.region[3]}"
+        anchor_text = result.matched_anchor or "none"
+        messagebox.showinfo(
+            "Arena Setup",
+            f"{result.message}\n\nRegion: {region_text}\nAnchor: {anchor_text}",
+            parent=self,
+        )
+
+    def _handle_arena_setup_failure(self, result: ArenaDetectionResult) -> None:
+        try:
+            self._card_canvas.itemconfigure(
+                self._status_text_item,
+                text="Status: Arena Setup Failed",
+                fill=self.ui_theme["colors"]["status_stopped_text"],
+            )
+        except Exception:
+            pass
+
+        lines = [result.message]
+        lines.append("Required setup: MTGA visible with an exact windowed 1920x1080 client area and Windows display scaling set to 100%.")
+        if result.debug_dir:
+            lines.append(f"Debug bundle: {result.debug_dir}")
+        messagebox.showerror(
+            "Arena Setup",
+            "\n\n".join(lines),
+            parent=self,
+        )
 
     def _run_bot(self):
         try:
@@ -3018,6 +3176,14 @@ class MTGBotUI(tk.Tk):
 
     def _open_calibration(self):
         CalibrationWindow(self, self.config_manager)
+
+    def _open_calibration_window(self, spawn_xy: tuple[int, int] | None = None, on_close=None):
+        CalibrationWindow(
+            self,
+            self.config_manager,
+            spawn_xy=spawn_xy,
+            on_close=on_close,
+        )
 
     def _open_current_session(self):
         gap_px = int(self.winfo_fpixels("5m"))
@@ -3506,6 +3672,12 @@ class SettingsWindow(tk.Toplevel):
             style_name="Secondary.TButton",
         )
         self._create_settings_canvas_button(
+            "calibrate",
+            "Calibrate",
+            self._open_advanced_fallback_window,
+            style_name="Secondary.TButton",
+        )
+        self._create_settings_canvas_button(
             "ui",
             "User Interface",
             self._open_ui_settings_window,
@@ -3698,6 +3870,17 @@ class SettingsWindow(tk.Toplevel):
             return
         self._open_replacement_subwindow(
             lambda xy: parent_ui._open_ui_settings(
+                spawn_xy=xy,
+                on_close=self._restore_after_subwindow_close,
+            )
+        )
+
+    def _open_advanced_fallback_window(self):
+        parent_ui = getattr(self, "master", None)
+        if parent_ui is None or not hasattr(parent_ui, "_open_calibration_window"):
+            return
+        self._open_replacement_subwindow(
+            lambda xy: parent_ui._open_calibration_window(
                 spawn_xy=xy,
                 on_close=self._restore_after_subwindow_close,
             )
@@ -4421,6 +4604,9 @@ class SwitchAccountWindow(tk.Toplevel):
         self._accounts_data = []
         self._table_rows = []
         self._selected_account_idx = 0
+        self.account_name_var = tk.StringVar()
+        self.account_email_var = tk.StringVar()
+        self.account_pw_var = tk.StringVar()
 
         self._manage_bg_source_image = None
         self._manage_bg_photo = None
@@ -4442,6 +4628,7 @@ class SwitchAccountWindow(tk.Toplevel):
         self.after(40, self._refresh_manage_background)
         self.after(160, self._refresh_manage_background)
         self.after(420, self._refresh_manage_background)
+        self._populate_details_fields()
         self._refresh_accounts_table()
         self._refresh_order_choices()
         self.after(220, self._apply_content_minsize)
@@ -4521,7 +4708,7 @@ class SwitchAccountWindow(tk.Toplevel):
             pad_x=18,
             pad_y=20,
             floor_w=460,
-            floor_h=680,
+            floor_h=820,
         )
 
     def _fit_window_to_content_width(self):
@@ -4828,8 +5015,8 @@ class SwitchAccountWindow(tk.Toplevel):
         self._canvas_buttons = {}
         self._manage_button_skin_cache = {}
         self._create_manage_group_panel("switch_block", x=16, y=30, width=428, height=94)
-        self._create_manage_group_panel("accounts_block", x=16, y=136, width=428, height=318)
-        self._create_manage_group_panel("order_block", x=16, y=466, width=428, height=220)
+        self._create_manage_group_panel("accounts_block", x=16, y=136, width=428, height=410)
+        self._create_manage_group_panel("order_block", x=16, y=558, width=428, height=220)
 
         cv.create_text(26, 48, text="Switch account (min)", fill=c["text"], font=("Segoe UI", 10), anchor="nw")
         self.switch_minutes_var = tk.StringVar(value=str(self._config_manager.get_account_switch_minutes()))
@@ -4863,24 +5050,53 @@ class SwitchAccountWindow(tk.Toplevel):
             name_item = cv.create_text(62, y, text="", fill=c["text"], font=("Segoe UI", 9, "bold"), anchor="nw", tags=(tag,))
             email_item = cv.create_text(208, y, text="", fill=c["text"], font=("Segoe UI", 9), anchor="nw", tags=(tag,))
             self._table_rows.append({"idx": idx_item, "name": name_item, "email": email_item})
+            self._canvas.tag_bind(tag, "<ButtonRelease-1>", lambda _e, row_idx=idx: self._select_account_row(row_idx))
+            self._canvas.tag_bind(tag, "<Enter>", lambda _e: self._canvas.configure(cursor="hand2"))
+            self._canvas.tag_bind(tag, "<Leave>", lambda _e: self._canvas.configure(cursor=""))
+
+        cv.create_text(26, 404, text="Name", fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw")
+        name_entry = self._make_entry(self, textvariable=self.account_name_var, width=34)
+        name_entry.bind("<Return>", lambda _e: self._save_selected_account())
+        cv.create_window(84, 402, anchor="nw", window=name_entry)
+
+        cv.create_text(26, 434, text="Email", fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw")
+        email_entry = self._make_entry(self, textvariable=self.account_email_var, width=34)
+        email_entry.bind("<Return>", lambda _e: self._save_selected_account())
+        cv.create_window(84, 432, anchor="nw", window=email_entry)
+
+        cv.create_text(26, 464, text="Password", fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw")
+        password_entry = self._make_entry(self, textvariable=self.account_pw_var, width=34, show="*")
+        password_entry.bind("<Return>", lambda _e: self._save_selected_account())
+        cv.create_window(84, 462, anchor="nw", window=password_entry)
+
+        self._create_manage_canvas_button(
+            name="save_row",
+            text="Save Row",
+            x=26,
+            y=498,
+            body_w=140,
+            body_h=34,
+            command=self._save_selected_account,
+            primary=True,
+        )
 
         self._create_manage_canvas_button(
             name="save_accounts",
             text="Save Accounts",
-            x=26,
-            y=404,
+            x=214,
+            y=498,
             body_w=160,
             body_h=34,
             command=self._save_accounts,
             primary=False,
         )
 
-        cv.create_text(26, 478, text="Account Play Order", fill=c["text"], font=("Segoe UI", 10), anchor="nw")
+        cv.create_text(26, 570, text="Account Play Order", fill=c["text"], font=("Segoe UI", 10), anchor="nw")
         current_order = self._config_manager.get_account_play_order()
         self._order_vars = []
         self._order_combos = []
         for idx in range(self._order_slots):
-            y = 500 + idx * 24
+            y = 592 + idx * 24
             cv.create_text(218, y, text=str(idx + 1), fill=c["text_muted"], font=("Segoe UI", 9), anchor="nw")
             var = tk.StringVar(value=current_order[idx] if idx < len(current_order) else "")
             combo = ttk.Combobox(
@@ -4899,7 +5115,7 @@ class SwitchAccountWindow(tk.Toplevel):
             name="save_order",
             text="Save Order",
             x=26,
-            y=634,
+            y=726,
             body_w=140,
             body_h=34,
             command=self._save_account_play_order,
@@ -4909,7 +5125,7 @@ class SwitchAccountWindow(tk.Toplevel):
             name="close_bottom",
             text="Back",
             x=246,
-            y=634,
+            y=726,
             body_w=120,
             body_h=34,
             command=self.destroy,
@@ -4926,20 +5142,48 @@ class SwitchAccountWindow(tk.Toplevel):
         c = self._theme
         for idx, row_widgets in enumerate(self._table_rows):
             account = self._accounts_data[idx]
-            self._canvas.itemconfigure(row_widgets["idx"], fill=c["text_muted"])
-            name_fg = c["text"]
-            email_fg = c["text"]
+            selected = idx == self._selected_account_idx
+            self._canvas.itemconfigure(row_widgets["idx"], fill=c["accent"] if selected else c["text_muted"])
+            name_fg = c["accent"] if selected else c["text"]
+            email_fg = c["accent"] if selected else c["text"]
             self._canvas.itemconfigure(row_widgets["name"], fill=name_fg, text=self._truncate_text(account["name"], 14))
             self._canvas.itemconfigure(row_widgets["email"], fill=email_fg, text=self._truncate_text(account["email"], 22))
 
     def _populate_details_fields(self):
-        return
+        account = self._accounts_data[self._selected_account_idx]
+        self.account_name_var.set(str(account.get("name", "")))
+        self.account_email_var.set(str(account.get("email", "")))
+        self.account_pw_var.set(str(account.get("pw", "")))
 
     def _apply_details_to_selected(self, validate: bool, show_error: bool = False) -> bool:
+        name = (self.account_name_var.get() or "").strip()
+        email = (self.account_email_var.get() or "").strip()
+        pw = (self.account_pw_var.get() or "").strip()
+        if validate and (name or email or pw) and (not name or not email or not pw):
+            if show_error:
+                messagebox.showerror(
+                    "Manage Accounts",
+                    "Name, Email and Password are required for a non-empty row.",
+                    parent=self,
+                )
+            return False
+        row = self._accounts_data[self._selected_account_idx]
+        row["name"] = name
+        row["email"] = email
+        row["pw"] = pw
+        if not name:
+            row["folder"] = ""
         return True
 
     def _select_account_row(self, idx: int):
-        return
+        if idx < 0 or idx >= len(self._accounts_data):
+            return
+        if not self._apply_details_to_selected(validate=False, show_error=False):
+            return
+        self._selected_account_idx = idx
+        self._populate_details_fields()
+        self._refresh_accounts_table()
+        self._refresh_order_choices()
 
     def _save_selected_account(self):
         if not self._apply_details_to_selected(validate=True, show_error=True):
@@ -5001,6 +5245,10 @@ class SwitchAccountWindow(tk.Toplevel):
                 var.set("")
 
     def _save_accounts(self):
+        if not self._apply_details_to_selected(validate=False, show_error=False):
+            return
+        self._refresh_accounts_table()
+        self._refresh_order_choices()
         try:
             accounts = self._collect_accounts_for_save()
         except ValueError as e:
