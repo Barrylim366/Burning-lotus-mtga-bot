@@ -75,28 +75,9 @@
         "Affinity2004",
         "TEUBAT"
     ],
-    "managed_accounts": [
-        {
-            "name": "TEUBAT",
-            "email": "giacomo.joghurt@web.de",
-            "pw": "Universal123*",
-            "folder": "TEUBAT"
-        },
-        {
-            "name": "Affinity2004",
-            "email": "giacomoj92@gmail.com",
-            "pw": "Universal123*",
-            "folder": "Affinity2004"
-        },
-        {
-            "name": "Ayaylll",
-            "email": "giacogispower@gmail.com",
-            "pw": "Universal123*",
-            "folder": "Ayaylll"
-        }
-    ],
+    "managed_accounts": [],
     "ui_windows_topmost": true,
-    "ui_scale_percent": 60,
+    "ui_scale_percent": 80,
     "first_run_prereq_ack": true,
     "first_run_prereq_ack_version": 1
 }
