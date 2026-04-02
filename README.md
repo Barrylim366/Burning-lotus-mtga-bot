@@ -51,6 +51,11 @@ Windows quick test for built-in account switch flow (without starting a full mat
 - It runs the current built-in full account-switch path from code (logout + login + post-login handling).
 - For logout-only testing, run: `python tools/test_builtin_logout.py`
 - The active controller flow in `Controller/MTGAController/Controller.py` again includes queue spam, post-match dismissal, and built-in account switching as one continuous runtime path.
+- Account switching now follows the `macOS_Version` logout order again: recorded logout replay first, then `ESC -> LOG_OUT_BTN -> LOG_OUT_OK_BTN` fallback. On Windows, those fallback targets are still mapped through the detected `arena_region` so the sequence stays window-relative instead of clicking raw desktop coordinates.
+- The account-switch flow now verifies logout via fresh `Player.log` login-screen markers before typing credentials. If logout does not actually reach the login screen, the switch aborts with a debug bundle instead of typing into the still-open home/options UI. The built-in fallback also retries visible `log_out_btn.png` / `okay_btn.png` templates before giving up.
+- Post-match dismiss and other home/options UI actions now use the detected MTGA window center or the last good cached `arena_region` as fallback. This avoids raw desktop clicks like `(1280, 720)` when the Arena window is shifted on the monitor.
+- Logout confirm (`OK`) no longer relies on full-screen `okay_btn.png` matching first. The mapped `log_out_ok_btn` click now has priority, and any image-based confirmation retry is limited to a small region around the expected dialog button to avoid false positives on the Home/Play button.
+- The logout dialog buttons now use the same low-level click injection pattern as record playback (`move -> left_down -> left_up`) instead of the generic `left_click(1)` helper, because the confirm dialog was visibly hovered but sometimes did not register the click.
 
 ## UI Updates
 
@@ -163,6 +168,8 @@ The runtime tries to locate MTGA dynamically:
 - Then verifies/fallbacks with visual anchor checks
 - Stores a session `arena_region` and re-acquires it on repeated verification failures
 - During combat, if live re-acquire fails briefly, the controller now reuses the last known good `arena_region` instead of sending blind desktop clicks
+- During normal in-game hand interaction, the controller now also reuses the last known good `arena_region` if live re-acquire fails, so regular cast/play scans do not drop back to raw desktop coordinates mid-match
+- During active `SelectN` / target-selection flows, the controller now also reuses the last known good `arena_region` if live re-acquire fails, so hand scans stay window-relative instead of falling back to raw desktop coordinates
 - Opponent avatar target selection uses the same direct 1920-relative mapping path as other calibrated points (`_map_abs_point_to_arena`), without avatar-specific fallback heuristics
 
 
@@ -429,6 +436,10 @@ python -m unittest tests/test_licensing.py
   - macOS: `~/Library/Logs/Wizards Of The Coast/MTGA/Player.log`
   - Windows: `C:/Users/<YourUser>/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`
   - Linux/Proton: `~/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`
+- `runtime/status.json` - shared bot telemetry for the external stuck supervisor
+  - Stored under the same per-user app folder as `bot.log`
+  - Includes current `mode`, derived `bot_state`, `turn_info`, `last_playerlog_event_at_epoch`, `last_decision_at_epoch`, `last_input_at_epoch`, `intentional_wait_until_epoch`, plus local sand-clock telemetry such as `my_timer_type`, `my_timer_elapsed_sec`, `my_timer_remaining_sec`, `my_timer_critical_count`, and `my_timer_timeout_seen`
+  - When the bot is launched under `tools/bot_supervisor.py`, the controller disables its old 3-minute blind `Resolve` spam and reports idle state through this file instead
 - Startup validation now requires an existing `Player.log`:
   - UI startup prompts for manual file selection if auto-detection fails.
   - CLI startup (`run_bot.py`) exits early with a clear error if the file does not exist.
@@ -465,6 +476,13 @@ python -m unittest tests/test_licensing.py
     - `full_screen_after_click.png`
     - `arena_region_after_click.png` (if arena window was detected)
     - `logout_focus_after_click.png` (crop around clicked position)
+  - When `SelectN` / discard hand scanning stalls, the controller saves a debug bundle under `debug/hand-select-<timestamp>/` with:
+    - `hand_select_state.json` (card id, scan bounds, current hover/cursor, arena regions, pending SelectN state)
+    - `log_tail.txt`
+    - `full_screen.png`
+    - `arena_region.png` (if arena window was detected)
+    - `scan_focus.png` (crop around the current scan position)
+  - The same `hand-select-<timestamp>` bundle is now also written for normal cast/play hand-scan failures (`SCAN_FAILED` / `SCAN_STOPPED`), not only `SelectN`
 
 ### Navigation Debug Artifacts
 
@@ -480,6 +498,100 @@ Bundle contents:
 - `log_tail.txt` (latest log lines)
 - `arena_region.png` (captured MTGA window region)
 - `full_screen.png` (full-screen capture)
+
+### Supervisor Workflow
+
+Use the external supervisor for unattended stuck detection and restart:
+
+```bash
+python tools/bot_supervisor.py
+```
+
+For the interactive Codex debug workflow, run:
+
+```bash
+python tools/bot_supervisor.py --stop-after-incident
+```
+
+Default behavior:
+
+- Starts `python tools/run_bot_ui_path.py` as a child process with `MTGA_SUPERVISOR_ACTIVE=1`
+- That child uses the same runtime inputs as the UI Start button: `ConfigManager`, configured click targets, configured screen bounds, configured input backend, account-switch settings, license validation, and the Arena setup preflight
+- Ignores stale `runtime/status.json` for a short startup grace window and waits until the status belongs to the newly spawned child PID before it starts classifying incidents
+- Watches `runtime/status.json` for real activity instead of only file mtimes
+- Treats the bot as stuck after 300 seconds without `Player.log`, decision, or input activity unless `intentional_wait_until_epoch` says the bot is in a known wait window
+- Treats the bot as stuck immediately when the local player's first `MY_TIMER_CRITICAL` sand-clock event happens in the same match
+- Treats the bot as stuck when the local player's `TimerType_Inactivity` is running but the bot has made no decision/input for 20 seconds, even if Arena never emits a late `MY_TIMER_CRITICAL`
+- Treats a local timeout loss (`ResultReason_Timeout`) as an incident too, so a post-timeout match that fails to return home still triggers recovery and Codex notification
+- Writes an incident bundle under `%LOCALAPPDATA%/BurningLotusBot/debug/incident-<timestamp>/`
+- Stops the child bot, and for own sand-clock incidents first tries `ESC -> Concede -> optional OK confirm` to leave the match cleanly, then verifies `HOME` via `home_anchor.png`, then always attempts the Codex `stuck` desktop notification from that `HOME` state before restarting the bot
+  - Late `TimerStateMessage` updates can omit `elapsedSec` / `remainingSec`; the controller now preserves the last known local inactivity-timer values instead of overwriting them with `null`, so the supervisor's rope-stall trigger still fires
+  - Legitimate controller wait phases now publish short `intentional_wait` windows too: pending-message, target-selection, pay-costs, and delayed own-priority decision scheduling no longer look like rope-stalls to the supervisor while the bot is intentionally waiting to act
+  - The delayed own-priority decision timer is now keyed per turn/phase/step/active-player window, so repeated `GameState` / `TimerStateMessage` updates from the same priority state no longer keep canceling and re-arming the bot's 4-second decision callback forever
+  - The in-game `Concede` step now first searches a focused ROI for `Buttons/concede.png` and clicks the matched button center; the old 1920-relative concede coordinate is only kept as a fallback if the template is not found
+  - If anchor-based arena reacquire fails during an in-game recovery, the supervisor now still uses the detected MTGA client window region and does not skip the `Concede` attempt just because no known UI anchor matched
+  - After a successful concede, the supervisor now watches `Player.log` for `MatchEndScene` / `MatchCompleted` / `IntermissionReq` markers and clicks the arena center to dismiss the defeat/victory screen before trying `ESC`/`HOME` recovery
+  - The recovery block is now crash-hardened: if any exception happens after `incident.json` is written, the incident still gets a `recovery.json`, a `codex_notify.json`, and a `supervisor_crash.json` traceback dump instead of leaving a half-written bundle and killing the supervisor silently
+  - With `--stop-after-incident`, the supervisor does not restart or requeue the bot after recovery; it leaves the newest incident bundle in place, sends the Codex `stuck` notification, captures post-recovery screenshots/state, and exits so the incident can be debugged before the next run
+
+Incident bundle contents:
+
+- `incident.json` (stale duration, last runtime status, derived Player.log state, arena detection result)
+- `bot_tail.txt`
+- `player_tail.txt`
+- `full_screen.png`
+- `arena_region.png` (if MTGA was detected)
+- `recovery.json`
+- `codex_notify.json`
+- `supervisor_crash.json` (only when the supervisor itself threw during recovery/notification)
+- `post_recovery_state.json`
+- `post_recovery_full_screen.png`
+- `post_recovery_arena_region.png` (if MTGA was still detectable after recovery)
+
+Optional flags:
+
+- `--startup-grace-sec 45`
+  - Startup guard against false-positive `stuck` notifications from an old/stale `runtime/status.json`
+  - During this grace window, the supervisor waits until status updates belong to the newly spawned child PID
+- `--my-timer-critical-threshold 1`
+  - Number of local-player `MY_TIMER_CRITICAL` events in one match before the supervisor treats the bot as stuck immediately
+- `--my-timer-stall-sec 20`
+  - Treat a running local `TimerType_Inactivity` with no bot decision/input for this many seconds as a stuck incident, even if Arena stops sending late timer updates
+- `--mtga-launch-cmd "<command>"`
+  - Optional hard recovery path for cases where `ESC` is not enough
+  - The supervisor kills the configured MTGA process names and relaunches the client before retrying `HOME` recovery
+- `--mtga-process-names "MTGA.exe,MTGALauncher.exe"`
+  - Override the Windows process names used for the optional hard client restart
+- `--concede-rel-x 1714 --concede-rel-y 814`
+  - Override the 1920-relative in-game `Concede` button position used after `ESC` opens the options menu
+
+Codex notification behavior:
+
+- Always attempted after successful recovery back to `HOME`
+- Searches the whole screen for `codex_window.png`, clicks it, types `stuck`, presses Enter
+- Result is written to `codex_notify.json`
+- The notifier now also saves `codex_notify_before.png` / `codex_notify_after.png` into the incident bundle and uses a double-click plus delayed double-Enter retry, because the Codex desktop field can look focused while the first Enter is still swallowed
+- This remains a best-effort desktop macro, not a guaranteed control channel; it only works if the Codex chat input is visible and still matches the template
+
+Standalone notifier test:
+
+```bash
+python tools/test_codex_notify.py
+```
+
+- Uses `codex_window.png` by default
+- Prints the notifier result as JSON
+- Exits with code `0` on success and `1` if the Codex input template was not found or the desktop macro failed
+
+UI-path CLI runner:
+
+```bash
+python tools/run_bot_ui_path.py
+```
+
+- Uses the same configuration and setup path as pressing Start in the UI
+- Unlike `run_bot.py`, it does not use hardcoded fallback click targets/screen bounds
+- This is the default child command used by `tools/bot_supervisor.py`
 
 ## Verify Template Assets
 

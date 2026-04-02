@@ -18,6 +18,7 @@ from state.state_machine import BotState, PlayerLogStateTracker, get_state_from_
 from vision.vision import VisionEngine
 from vision.window_locator import ArenaRegionProvider
 import bot_logger
+import runtime_status
 
 _TARGET_FIELD_UNSET = object()
 _GUILD_COLOR_MAP = {
@@ -56,6 +57,8 @@ class Controller(ControllerSecondary):
         self.__mulligan_decision_callback = None
         self.__action_success_callback = None
         self.__decision_execution_thread = None
+        self.__decision_delay_key = None
+        self.__decision_delay_scheduled_at = 0.0
         self.__mulligan_execution_thread = None
         self.__inactivity_timer = None
         self.__inactivity_timeout = 180  # 3 minutes in seconds
@@ -65,6 +68,7 @@ class Controller(ControllerSecondary):
         self.screen_bounds = screen_bounds
         self.patterns = {
             'game_state': '"type": "GREMessageType_GameStateMessage"',
+            'timer_state': '"type": "GREMessageType_TimerStateMessage"',
             'hover_id': 'objectId',
             'match_completed': 'MatchGameRoomStateType_MatchCompleted',
             'assign_damage': '"type": "GREMessageType_AssignDamageReq"',
@@ -82,6 +86,13 @@ class Controller(ControllerSecondary):
             )
         self.log_reader = LogReader(self.patterns.values(), log_path=log_path, callback=self.__log_callback)
         self._log_path = log_path
+        self._supervisor_active = str(os.environ.get("MTGA_SUPERVISOR_ACTIVE", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        runtime_status.reset_status(log_path=log_path)
         try:
             self.input = create_input_controller(input_backend)
         except InputControllerError as e:
@@ -263,6 +274,7 @@ class Controller(ControllerSecondary):
         self._last_good_arena_region: tuple[int, int, int, int] | None = None
         self._last_good_arena_region_ts = 0.0
         self._arena_region_missing_logged_ts = 0.0
+        self._hand_select_debug_logged_ts = 0.0
         self._arena_correction_xy: tuple[int, int] = (0, 0)
         self._logout_play_origin: tuple[int, int] | None = None
         self._navigation_verify_failures = 0
@@ -279,6 +291,7 @@ class Controller(ControllerSecondary):
             self.log_out_ok_btn_coors = (1875, 809)
         if self.log_out_focus_coors is None:
             self.log_out_focus_coors = self.home_play_button_coors
+        runtime_status.set_mode("ready", bot_state=str(self._get_state_from_log()))
 
     def _resource_root_dir(self) -> str:
         if getattr(sys, "frozen", False):
@@ -599,10 +612,21 @@ class Controller(ControllerSecondary):
         self._last_good_arena_region_ts = time.time()
 
     def _should_reuse_cached_arena_region(self) -> bool:
+        try:
+            if self._get_state_from_log() == BotState.IN_GAME:
+                return True
+        except Exception:
+            pass
         turn_info = self.updated_game_state.get_turn_info() or {}
         if turn_info.get("phase") == "Phase_Combat":
             return True
         if turn_info.get("step") == "Step_DeclareAttack":
+            return True
+        if self.__pending_select_n is not None or self.__select_n_in_progress:
+            return True
+        if self.__pending_target_select is not None:
+            return True
+        if self.__is_selecting_targets():
             return True
         return False
 
@@ -627,11 +651,25 @@ class Controller(ControllerSecondary):
 
     def _click_abs(self, x: int, y: int, tag: str) -> None:
         bot_logger.log_click(int(x), int(y), tag)
+        runtime_status.touch_input(tag, (int(x), int(y)))
         self.input.move_abs(int(x), int(y))
         time.sleep(0.1)
         self.input.left_down()
         time.sleep(0.06)
         self.input.left_up()
+
+    def _get_ui_action_arena_region(self, *, force_reacquire: bool = True, label: str = "UI_ACTION") -> tuple[int, int, int, int] | None:
+        arena = self._ensure_arena_region(force_reacquire=force_reacquire)
+        if arena is not None:
+            return arena
+        cached = self._last_good_arena_region
+        if cached is None:
+            bot_logger.log_error(f"{label}: no arena_region available for UI action.")
+            return None
+        age = max(0.0, time.time() - self._last_good_arena_region_ts)
+        bot_logger.log_info(f"{label}: using cached arena_region={cached} age={age:.1f}s for UI action.")
+        self._arena_region = cached
+        return cached
 
     def _map_abs_point_to_arena(
         self,
@@ -757,7 +795,7 @@ class Controller(ControllerSecondary):
         label: str,
         force_reacquire: bool = True,
     ) -> tuple[tuple[int, int], str]:
-        arena = self._ensure_arena_region(force_reacquire=force_reacquire)
+        arena = self._get_ui_action_arena_region(force_reacquire=force_reacquire, label=label)
         if arena is None:
             return (int(raw_point[0]), int(raw_point[1])), f"{label}_no_arena"
         ct = self._loaded_click_targets or {}
@@ -871,6 +909,71 @@ class Controller(ControllerSecondary):
             pass
         bot_logger.log_info(f"{click_label} debug bundle saved: {debug_dir}")
 
+    def _write_hand_select_debug_bundle(
+        self,
+        *,
+        reason: str,
+        card_id: int,
+        scan_start: tuple[int, int],
+        scan_end: tuple[int, int],
+        current_pos: tuple[int, int] | None = None,
+        current_hovered_id: int | None = None,
+    ) -> None:
+        now = time.time()
+        if (now - self._hand_select_debug_logged_ts) < 1.5:
+            return
+        self._hand_select_debug_logged_ts = now
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        debug_dir = Path(bot_logger.ensure_debug_dir(f"hand-select-{stamp}"))
+        try:
+            payload = {
+                "reason": reason,
+                "card_id": int(card_id),
+                "state": str(self._get_state_from_log()),
+                "arena_region": self._arena_region,
+                "last_good_arena_region": self._last_good_arena_region,
+                "last_good_arena_region_age_sec": max(0.0, time.time() - float(self._last_good_arena_region_ts or 0.0)),
+                "scan_start": [int(scan_start[0]), int(scan_start[1])],
+                "scan_end": [int(scan_end[0]), int(scan_end[1])],
+                "current_pos": [int(current_pos[0]), int(current_pos[1])] if current_pos is not None else None,
+                "current_hovered_id": current_hovered_id,
+                "pending_select_n": self.__pending_select_n,
+                "select_n_in_progress": self.__select_n_in_progress,
+                "turn_info": self.updated_game_state.get_turn_info() or {},
+                "log_path": self._log_path,
+            }
+            with open(debug_dir / "hand_select_state.json", "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+        except Exception:
+            pass
+        try:
+            tail = self._state_tracker.get_tail(180)
+            if not tail:
+                tail = self._read_log_tail(self._log_path, max_bytes=150000)
+            with open(debug_dir / "log_tail.txt", "w", encoding="utf-8") as f:
+                f.write(tail or "")
+        except Exception:
+            pass
+        try:
+            self._vision.begin_tick()
+            full = self._vision.capture(None)
+            self._vision.save_image(full, str(debug_dir / "full_screen.png"))
+            if self._arena_region:
+                arena_img = self._vision.capture(self._arena_region)
+                self._vision.save_image(arena_img, str(debug_dir / "arena_region.png"))
+            focus_center = current_pos or scan_start
+            focus_region = (
+                int(focus_center[0] - 320),
+                int(focus_center[1] - 220),
+                640,
+                440,
+            )
+            focus_img = self._vision.capture(focus_region)
+            self._vision.save_image(focus_img, str(debug_dir / "scan_focus.png"))
+        except Exception:
+            pass
+        bot_logger.log_error(f"Hand select debug bundle saved: {debug_dir}")
+
     def _click_logout_target(self, raw_point: tuple[int, int], config_key: str, click_label: str) -> None:
         mapped = None
         source = ""
@@ -898,6 +1001,7 @@ class Controller(ControllerSecondary):
         )
         # Mirror record-playback click behavior for logout reliability.
         bot_logger.log_click(mapped[0], mapped[1], click_label)
+        runtime_status.touch_input(click_label, mapped)
         self.input.move_abs(mapped[0], mapped[1])
         time.sleep(0.05)
         self.input.left_down()
@@ -995,7 +1099,14 @@ class Controller(ControllerSecondary):
         )
         return p1, p2
 
-    def _click_image(self, image_path: str, label: str, confidence: float = 0.82, timeout: float = 20.0) -> bool:
+    def _click_image(
+        self,
+        image_path: str,
+        label: str,
+        confidence: float = 0.82,
+        timeout: float = 20.0,
+        region: tuple[int, int, int, int] | None = None,
+    ) -> bool:
         try:
             import pyautogui
         except Exception as e:
@@ -1007,20 +1118,36 @@ class Controller(ControllerSecondary):
             return False
 
         start = time.time()
+        region_info = ""
+        if region is not None:
+            try:
+                region = (
+                    int(region[0]),
+                    int(region[1]),
+                    max(1, int(region[2])),
+                    max(1, int(region[3])),
+                )
+                region_info = f", region={region}"
+            except Exception:
+                region = None
         bot_logger.log_info(
-            f"{label}: searching image with confidence={confidence:.2f}, timeout={timeout:.1f}s."
+            f"{label}: searching image with confidence={confidence:.2f}, timeout={timeout:.1f}s{region_info}."
         )
         while (time.time() - start) < timeout:
             if self._stop_requested:
                 bot_logger.log_info(f"{label}: search aborted (stop requested).")
                 return False
             try:
-                pos = pyautogui.locateCenterOnScreen(image_path, confidence=confidence)
+                if region is not None:
+                    pos = pyautogui.locateCenterOnScreen(image_path, confidence=confidence, region=region)
+                else:
+                    pos = pyautogui.locateCenterOnScreen(image_path, confidence=confidence)
             except Exception:
                 pos = None
             if pos:
                 x, y = int(pos.x), int(pos.y)
                 bot_logger.log_click(x, y, label)
+                runtime_status.touch_input(label, (x, y))
                 self.input.move_abs(x, y)
                 time.sleep(0.1)
                 self.input.left_down()
@@ -1033,6 +1160,106 @@ class Controller(ControllerSecondary):
                 bot_logger.log_info(f"{label}: still searching ({elapsed:.1f}s elapsed).")
         bot_logger.log_error(f"{label}: image not found within {timeout:.1f}s")
         return False
+
+    def _get_log_size(self, path: str) -> int:
+        try:
+            return int(os.path.getsize(path))
+        except Exception:
+            return 0
+
+    def _read_log_since(self, path: str, start_offset: int, max_bytes: int = 400000) -> str:
+        try:
+            offset = max(0, int(start_offset or 0))
+        except Exception:
+            offset = 0
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                if size <= offset:
+                    return ""
+                f.seek(offset)
+                data = f.read(min(max_bytes, size - offset))
+            return data.decode("utf-8", errors="ignore")
+        except Exception as e:
+            bot_logger.log_error(f"Failed to read player.log delta: {e}")
+            return ""
+
+    def _wait_for_playerlog_marker(
+        self,
+        markers: list[str],
+        *,
+        start_offset: int,
+        timeout_sec: float,
+        label: str,
+    ) -> bool:
+        normalized = [str(m or "").strip() for m in markers if str(m or "").strip()]
+        if not normalized:
+            return False
+        deadline = time.time() + max(0.5, float(timeout_sec))
+        while time.time() < deadline:
+            if self._stop_requested:
+                bot_logger.log_info(f"{label}: wait aborted (stop requested).")
+                return False
+            delta = self._read_log_since(self._log_path, start_offset=start_offset)
+            if delta:
+                lowered = delta.lower()
+                for marker in normalized:
+                    if marker.lower() in lowered:
+                        bot_logger.log_info(f"{label}: matched player.log marker '{marker}'.")
+                        return True
+            time.sleep(0.25)
+        return False
+
+    def _wait_for_logout_to_reach_login_screen(self, *, start_offset: int, timeout_sec: float = 8.0) -> bool:
+        return self._wait_for_playerlog_marker(
+            [
+                "Sending player back to Login screen.",
+                "ALT_Prefab.LoginPanelPrefab",
+                "CredentialLoginContext created",
+            ],
+            start_offset=start_offset,
+            timeout_sec=timeout_sec,
+            label="LOGOUT_WAIT",
+        )
+
+    def _click_logout_image_if_visible(
+        self,
+        image_name: str,
+        *,
+        label: str,
+        confidence: float = 0.84,
+        timeout_sec: float = 1.2,
+        region: tuple[int, int, int, int] | None = None,
+    ) -> bool:
+        image_path = os.path.join(self._buttons_dir(), image_name)
+        if not os.path.exists(image_path):
+            return False
+        return self._click_image(
+            image_path,
+            label,
+            confidence=confidence,
+            timeout=timeout_sec,
+            region=region,
+        )
+
+    def _region_around_point(
+        self,
+        point: tuple[int, int],
+        *,
+        width: int,
+        height: int,
+    ) -> tuple[int, int, int, int]:
+        try:
+            px = int(point[0])
+            py = int(point[1])
+        except Exception:
+            px, py = 0, 0
+        half_w = max(1, int(width // 2))
+        half_h = max(1, int(height // 2))
+        left = max(0, px - half_w)
+        top = max(0, py - half_h)
+        return (left, top, max(1, int(width)), max(1, int(height)))
 
     def _read_log_tail(self, path: str, max_bytes: int = 600000) -> str:
         try:
@@ -1420,6 +1647,7 @@ class Controller(ControllerSecondary):
             )
         bot_logger.log_info("Queue attempt: clicking queue button.")
         bot_logger.log_click(target[0], target[1], "QUEUE_BUTTON")
+        runtime_status.touch_input("QUEUE_BUTTON", target)
         self.input.move_abs(target[0], target[1])
         self.input.left_down()
         time.sleep(0.2)
@@ -1434,6 +1662,19 @@ class Controller(ControllerSecondary):
 
     def start_game(self) -> None:
         self._stop_requested = False
+        runtime_status.set_mode(
+            "starting",
+            bot_state=str(self._get_state_from_log()),
+            my_timer_running=False,
+            my_timer_type="",
+            my_timer_remaining_sec=None,
+            my_timer_elapsed_sec=None,
+            my_timer_duration_sec=None,
+            my_timer_critical_count=0,
+            my_timer_last_critical_at_epoch=0.0,
+            my_timer_timeout_seen=False,
+            my_timer_timeout_at_epoch=0.0,
+        )
         if self._account_play_order:
             bot_logger.log_info(f"Account play order active: {self._account_play_order}")
             bot_logger.log_info(f"Account play order next index: {self._account_cycle_index}")
@@ -1457,6 +1698,7 @@ class Controller(ControllerSecondary):
 
     def end_game(self) -> None:
         self._stop_requested = True
+        runtime_status.set_mode("stopped", bot_state=str(self._get_state_from_log()))
         # Prevent any future decisions / restarts from firing after a UI stop.
         if self.__decision_execution_thread is not None:
             try:
@@ -1464,6 +1706,8 @@ class Controller(ControllerSecondary):
             except Exception:
                 pass
             self.__decision_execution_thread = None
+        self.__decision_delay_key = None
+        self.__decision_delay_scheduled_at = 0.0
         if self.__mulligan_execution_thread is not None:
             try:
                 self.__mulligan_execution_thread.cancel()
@@ -1568,6 +1812,15 @@ class Controller(ControllerSecondary):
                     bot_logger.log_error(
                         f"SCAN_FAILED: Card {card_id} not found. Scanned from x={start_x} to x={end_x}, ended at x={current_x}"
                     )
+                    current_pos = self.input.position()
+                    self._write_hand_select_debug_bundle(
+                        reason="cast_scan_failed",
+                        card_id=card_id,
+                        scan_start=hand_p1,
+                        scan_end=hand_p2,
+                        current_pos=(current_pos.x, current_pos.y),
+                        current_hovered_id=current_hovered_id,
+                    )
                     print(f"Scanned entire hand area but did not find card_id: {card_id}")
                     break
 
@@ -1605,6 +1858,15 @@ class Controller(ControllerSecondary):
                     # Break outer loop if we hit bounds without finding new log line
                     bot_logger.log_error(
                         f"SCAN_STOPPED: No hover update before bounds (target={card_id}, start=({start_x},{start_y}), end=({end_x},{end_y}))"
+                    )
+                    current_pos = self.input.position()
+                    self._write_hand_select_debug_bundle(
+                        reason="cast_scan_stopped",
+                        card_id=card_id,
+                        scan_start=hand_p1,
+                        scan_end=hand_p2,
+                        current_pos=(current_pos.x, current_pos.y),
+                        current_hovered_id=current_hovered_id,
                     )
                     break
 
@@ -1793,6 +2055,15 @@ class Controller(ControllerSecondary):
                     bot_logger.log_error(
                         f"HAND_SELECT_FAILED: Card {card_id} not found. Scanned x={start_x}..{end_x}, end={current_x}"
                     )
+                    current_pos = self.input.position()
+                    self._write_hand_select_debug_bundle(
+                        reason="hand_select_failed",
+                        card_id=card_id,
+                        scan_start=hand_p1,
+                        scan_end=hand_p2,
+                        current_pos=(current_pos.x, current_pos.y),
+                        current_hovered_id=current_hovered_id,
+                    )
                     return False
 
                 while not self.log_reader.has_new_line(self.patterns['hover_id']):
@@ -1824,6 +2095,15 @@ class Controller(ControllerSecondary):
                 else:
                     bot_logger.log_error(
                         f"HAND_SELECT_STOPPED: No hover update before bounds (target={card_id})"
+                    )
+                    current_pos = self.input.position()
+                    self._write_hand_select_debug_bundle(
+                        reason="hand_select_stopped",
+                        card_id=card_id,
+                        scan_start=hand_p1,
+                        scan_end=hand_p2,
+                        current_pos=(current_pos.x, current_pos.y),
+                        current_hovered_id=current_hovered_id,
                     )
                     return False
 
@@ -2097,6 +2377,7 @@ class Controller(ControllerSecondary):
 
     def click_assign_damage_done(self):
         """Click the Done button during damage assignment"""
+        runtime_status.set_mode("in_game", bot_state=str(self._get_state_from_log()))
         target, source = self._map_abs_point_to_arena(
             self.assign_damage_done_coors,
             label="ASSIGN_DAMAGE_DONE",
@@ -2107,6 +2388,7 @@ class Controller(ControllerSecondary):
             f"ASSIGN_DAMAGE_DONE target: source={source} arena={self._arena_region} raw={self.assign_damage_done_coors} mapped={target}"
         )
         bot_logger.log_click(target[0], target[1], "ASSIGN_DAMAGE_DONE")
+        runtime_status.touch_input("ASSIGN_DAMAGE_DONE", target)
         self.input.move_abs(target[0], target[1])
         time.sleep(0.5)
         self.input.left_click(1)
@@ -2117,6 +2399,12 @@ class Controller(ControllerSecondary):
 
     def __handle_inactivity_timeout(self):
         """Handle timeout when no activity for 3 minutes - click next button repeatedly"""
+        if self._supervisor_active:
+            bot_logger.log_error("TIMEOUT: legacy inactivity resolve disabled while supervisor mode is active.")
+            runtime_status.set_recovery_reason("controller_inactivity_timeout")
+            runtime_status.set_mode("stuck_suspected", bot_state=str(self._get_state_from_log()))
+            self.__inactivity_timer = None
+            return
         bot_logger.log_info("TIMEOUT: No activity for 3 minutes - clicking next button")
         self.resolve()  # Click the "next" button
         # Reschedule timer to keep clicking until turn ends
@@ -2128,6 +2416,9 @@ class Controller(ControllerSecondary):
 
     def reset_inactivity_timer(self):
         """Reset the inactivity timer - called when a decision is made"""
+        if self._supervisor_active:
+            runtime_status.touch_decision()
+            return
         if self.__inactivity_timer is not None:
             self.__inactivity_timer.cancel()
             self.__inactivity_timer = None
@@ -2150,11 +2441,20 @@ class Controller(ControllerSecondary):
         if self._stop_requested:
             bot_logger.log_info("Dismiss end screen skipped: stop requested.")
             return
+        runtime_status.set_mode("post_match", bot_state=str(self._get_state_from_log()))
         self._suppress_selections = False
-        # Click in center of screen to dismiss end screen
-        center_x = (self.screen_bounds[0][0] + self.screen_bounds[1][0]) // 2
-        center_y = (self.screen_bounds[0][1] + self.screen_bounds[1][1]) // 2
+        arena = self._get_ui_action_arena_region(force_reacquire=True, label="DISMISS_END_SCREEN")
+        if arena is not None:
+            center_x = int(arena[0] + (arena[2] // 2))
+            center_y = int(arena[1] + (arena[3] // 2))
+            source = f"arena_center arena={arena}"
+        else:
+            center_x = (self.screen_bounds[0][0] + self.screen_bounds[1][0]) // 2
+            center_y = (self.screen_bounds[0][1] + self.screen_bounds[1][1]) // 2
+            source = f"screen_bounds_center screen_bounds={self.screen_bounds}"
+        bot_logger.log_info(f"Dismiss end screen: clicking {source} target=({center_x}, {center_y})")
         bot_logger.log_click(center_x, center_y, "DISMISS_END_SCREEN")
+        runtime_status.touch_input("DISMISS_END_SCREEN", (center_x, center_y))
         self.input.move_abs(center_x, center_y)
         time.sleep(0.5)
         self.input.left_click(1)
@@ -2197,6 +2497,8 @@ class Controller(ControllerSecondary):
         if self.__decision_execution_thread is not None:
             self.__decision_execution_thread.cancel()
             self.__decision_execution_thread = None
+        self.__decision_delay_key = None
+        self.__decision_delay_scheduled_at = 0.0
         if self.__mulligan_execution_thread is not None:
             self.__mulligan_execution_thread.cancel()
             self.__mulligan_execution_thread = None
@@ -2304,14 +2606,27 @@ class Controller(ControllerSecondary):
 
     def __log_callback(self, pattern: str, line_containing_pattern: str):
         self._state_tracker.push_line(line_containing_pattern)
+        current_state = self._get_state_from_log()
+        runtime_status.touch_playerlog_event(state=str(current_state))
         if pattern == self.patterns["game_state"]:
             self.__update_game_state(json.loads(line_containing_pattern))
             if self._queue_spam_thread and self._queue_spam_thread.is_alive():
                 self._stop_queue_spam = True
             if self._queue_spam_thread and self._queue_spam_thread.is_alive():
                 self._stop_queue_spam = True
+        elif pattern == self.patterns["timer_state"]:
+            self.__update_game_state(json.loads(line_containing_pattern))
         elif pattern == self.patterns["match_completed"]:
             bot_logger.log_info("Detected match completed event")
+            runtime_status.set_mode(
+                "post_match",
+                bot_state=str(current_state),
+                my_timer_running=False,
+                my_timer_type="",
+                my_timer_remaining_sec=None,
+                my_timer_elapsed_sec=None,
+                my_timer_duration_sec=None,
+            )
             self._suppress_selections = True
             self.__pending_select_n = None
             self.__select_n_in_progress = False
@@ -2333,19 +2648,26 @@ class Controller(ControllerSecondary):
             if self._account_switch_due():
                 self._account_switch_pending = True
         elif pattern == self.patterns["queue_ready_marker"]:
+            runtime_status.set_mode("queue_ready", bot_state=str(current_state))
             self._handle_queue_ready()
         elif pattern == self.patterns["main_nav_loaded"]:
+            runtime_status.set_mode("home_ready", bot_state=str(current_state))
             self._handle_main_nav_loaded()
         elif pattern == self.patterns["assign_damage"]:
             # Wait a small delay to ensure UI is ready
+            runtime_status.set_mode("in_game", bot_state=str(current_state))
             threading.Timer(1.0, self.click_assign_damage_done).start()
         elif pattern == self.patterns["declare_attackers"]:
+            runtime_status.set_mode("in_game", bot_state=str(current_state))
             self.__handle_declare_attackers_req(line_containing_pattern)
         elif pattern == self.patterns["select_n"]:
+            runtime_status.set_mode("in_game", bot_state=str(current_state))
             self.__handle_select_n_req(line_containing_pattern)
         elif pattern == self.patterns["select_targets"]:
+            runtime_status.set_mode("in_game", bot_state=str(current_state))
             self.__handle_select_targets_req(line_containing_pattern)
         elif pattern == self.patterns["pay_costs"]:
+            runtime_status.set_mode("in_game", bot_state=str(current_state))
             self.__pending_pay_costs_ts = time.time()
             bot_logger.log_info("PayCostsReq detected: attempting auto-pay.")
             self.__handle_pay_costs_req(line_containing_pattern)
@@ -2612,13 +2934,16 @@ class Controller(ControllerSecondary):
             return
         if self._post_match_ready_ts is None:
             return
+        runtime_status.set_mode("post_match", bot_state=str(self._get_state_from_log()))
         elapsed = time.time() - self._post_match_ready_ts
         if elapsed < self._post_match_delay_sec:
             remaining = self._post_match_delay_sec - elapsed
             bot_logger.log_info(f"Post-match delay active ({remaining:.1f}s remaining).")
+            runtime_status.set_intentional_wait(remaining + 0.2, "post_match_delay")
             # Ensure we re-check when the delay elapses to avoid getting stuck at ~0s.
             threading.Timer(max(0.1, remaining + 0.1), self._maybe_post_match_action).start()
             return
+        runtime_status.clear_intentional_wait()
         if self._account_switch_pending or self._account_switch_due():
             bot_logger.log_info("Post-match UI ready; starting account switch.")
             threading.Thread(target=self._perform_account_switch, daemon=True).start()
@@ -2649,6 +2974,20 @@ class Controller(ControllerSecondary):
             return
         self._stop_queue_spam = False
         self._queue_ready = False
+        runtime_status.clear_intentional_wait()
+        runtime_status.set_mode(
+            "queueing",
+            bot_state=str(self._get_state_from_log()),
+            my_timer_running=False,
+            my_timer_type="",
+            my_timer_remaining_sec=None,
+            my_timer_elapsed_sec=None,
+            my_timer_duration_sec=None,
+            my_timer_critical_count=0,
+            my_timer_last_critical_at_epoch=0.0,
+            my_timer_timeout_seen=False,
+            my_timer_timeout_at_epoch=0.0,
+        )
         bot_logger.log_info("Starting queue spam loop.")
         self._queue_spam_thread = threading.Thread(target=self._queue_spam_loop, daemon=True)
         self._queue_spam_thread.start()
@@ -2669,6 +3008,8 @@ class Controller(ControllerSecondary):
         if self._account_switch_in_progress:
             return
         self._account_switch_in_progress = True
+        runtime_status.clear_intentional_wait()
+        runtime_status.set_mode("account_switch", bot_state=str(self._get_state_from_log()))
         queued_after_login = False
         try:
             if self._stop_requested:
@@ -2725,11 +3066,38 @@ class Controller(ControllerSecondary):
             else:
                 bot_logger.log_info(f"Account cycle index: {self._account_cycle_index} -> {next_index}")
             self._post_login_action_done = False
-            self._run_mapped_logout_sequence()
+            logout_log_offset = self._get_log_size(self._log_path)
+            logout_ok = False
+            if self._replay_recorded_logout():
+                bot_logger.log_info("Recorded logout replay started; waiting for login-screen transition.")
+                runtime_status.set_intentional_wait(max(8.0, self._login_delete_delay_sec + 3.0), "logout_transition_wait")
+                logout_ok = self._wait_for_logout_to_reach_login_screen(
+                    start_offset=logout_log_offset,
+                    timeout_sec=max(8.0, self._login_delete_delay_sec + 3.0),
+                )
+                if not logout_ok:
+                    bot_logger.log_error("Recorded logout replay did not reach the login screen; falling back to built-in logout clicks.")
+            else:
+                bot_logger.log_info("Recorded logout replay unavailable; falling back to built-in macOS-style logout clicks.")
+
+            if not logout_ok:
+                logout_log_offset = self._get_log_size(self._log_path)
+                self._run_mapped_logout_sequence()
+                runtime_status.set_intentional_wait(max(8.0, self._login_delete_delay_sec + 3.0), "logout_transition_wait")
+                logout_ok = self._wait_for_logout_to_reach_login_screen(
+                    start_offset=logout_log_offset,
+                    timeout_sec=max(8.0, self._login_delete_delay_sec + 3.0),
+                )
+            if not logout_ok:
+                bot_logger.log_error("Account switch failed: logout did not reach the login screen.")
+                self._write_nav_debug_bundle("logout_failed_no_login_screen")
+                self._account_switch_pending = False
+                return
             if self._stop_requested:
                 bot_logger.log_info("Account switch aborted after logout: stop requested.")
                 return
             bot_logger.log_info(f"Account switch: waiting {self._login_delete_delay_sec:.2f}s for login screen.")
+            runtime_status.set_intentional_wait(self._login_delete_delay_sec + 0.2, "login_screen_settle")
             for _ in range(int(self._login_delete_delay_sec * 10)):
                 if self._stop_requested:
                     bot_logger.log_info("Account switch aborted while waiting for login screen.")
@@ -2737,6 +3105,7 @@ class Controller(ControllerSecondary):
                 time.sleep(0.1)
 
             bot_logger.log_info("Account switch: entering credentials.")
+            runtime_status.clear_intentional_wait()
             if self._stop_requested:
                 bot_logger.log_info("Account switch aborted before typing: stop requested.")
                 return
@@ -2754,6 +3123,7 @@ class Controller(ControllerSecondary):
 
             if not self._stop_requested:
                 bot_logger.log_info("Account switch: waiting 20s before post-login record.")
+                runtime_status.set_intentional_wait(20.2, "post_login_wait")
                 for _ in range(200):
                     if self._stop_requested:
                         break
@@ -2763,6 +3133,7 @@ class Controller(ControllerSecondary):
                     self._post_login_action_done = True
             if not self._stop_requested and self._post_login_action_done:
                 bot_logger.log_info("Post-login routine done; waiting 5s before queueing.")
+                runtime_status.set_intentional_wait(5.2, "post_login_queue_delay")
                 for _ in range(50):
                     if self._stop_requested:
                         break
@@ -2790,42 +3161,85 @@ class Controller(ControllerSecondary):
         except Exception as e:
             bot_logger.log_error(f"Account switch failed: {e}")
         finally:
+            runtime_status.clear_intentional_wait()
             self._account_switch_in_progress = False
 
     def _run_mapped_logout_sequence(self) -> None:
-        bot_logger.log_info("Account switch: using built-in mapped logout sequence.")
-        self._logout_play_origin = self._resolve_logout_play_button_origin()
-        focus_raw = self.log_out_focus_coors or self.home_play_button_coors
-        focus_target, _ = self._resolve_target_from_queue_anchor_rebase(
-            config_key="log_out_focus",
-            raw_point=focus_raw,
-            label="ACCOUNT_SWITCH_FOCUS",
-            force_reacquire=True,
-        )
-        bot_logger.log_info(f"Account switch: focus clicks before ESC at {focus_target}.")
-        self._click(focus_target, "ACCOUNT_SWITCH_FOCUS")
-        time.sleep(0.30)
-        self._click(focus_target, "ACCOUNT_SWITCH_FOCUS")
-        time.sleep(0.74)
+        bot_logger.log_info("Account switch: using built-in macOS-style logout sequence.")
         bot_logger.log_info("Account switch: pressing ESC to open options menu.")
         self.input.tap_escape()
-        time.sleep(1.62)
+        time.sleep(1.0)
         last_scene = self._get_last_scene_name()
-        bot_logger.log_info(f"Account switch: last scene before logout click = {last_scene or 'unknown'}.")
-        bot_logger.log_info("Account switch: clicking LOG_OUT_BTN (mapped).")
-        self._click_logout_target(self.log_out_btn_coors, "log_out_btn", "LOG_OUT_BTN")
-        time.sleep(3.08)
-        bot_logger.log_info("Account switch: clicking LOG_OUT_OK_BTN (mapped).")
-        self._click_logout_target(self.log_out_ok_btn_coors, "log_out_ok_btn", "LOG_OUT_OK_BTN")
-        self._logout_play_origin = None
+        bot_logger.log_info(f"Account switch: last scene before fallback logout = {last_scene or 'unknown'}.")
+        if last_scene == "Store":
+            bot_logger.log_info("Account switch: Store scene detected; pressing ESC again for options menu.")
+            self.input.tap_escape()
+            time.sleep(1.0)
+        else:
+            time.sleep(1.0)
+
+        log_out_target, log_out_source = self._resolve_target_from_queue_anchor_rebase(
+            config_key="log_out_btn",
+            raw_point=self.log_out_btn_coors,
+            label="LOG_OUT_BTN",
+            force_reacquire=True,
+        )
+        bot_logger.log_info(
+            "Account switch: clicking LOG_OUT_BTN at {} (source={}).".format(
+                log_out_target,
+                log_out_source,
+            )
+        )
+        self._click_abs(int(log_out_target[0]), int(log_out_target[1]), "LOG_OUT_BTN")
+        time.sleep(0.15)
+        self._click_abs(int(log_out_target[0]), int(log_out_target[1]), "LOG_OUT_BTN")
+        time.sleep(0.8)
+        if self._click_logout_image_if_visible(
+            "log_out_btn.png",
+            label="LOG_OUT_BTN_IMG",
+            confidence=0.84,
+            timeout_sec=1.2,
+            region=self._region_around_point(log_out_target, width=520, height=260),
+        ):
+            time.sleep(0.8)
+
+        log_out_ok_target, log_out_ok_source = self._resolve_target_from_queue_anchor_rebase(
+            config_key="log_out_ok_btn",
+            raw_point=self.log_out_ok_btn_coors,
+            label="LOG_OUT_OK_BTN",
+            force_reacquire=True,
+        )
+        bot_logger.log_info(
+            "Account switch: clicking LOG_OUT_OK_BTN at {} (source={}).".format(
+                log_out_ok_target,
+                log_out_ok_source,
+            )
+        )
+        self._click_abs(int(log_out_ok_target[0]), int(log_out_ok_target[1]), "LOG_OUT_OK_BTN")
+        time.sleep(0.15)
+        self._click_abs(int(log_out_ok_target[0]), int(log_out_ok_target[1]), "LOG_OUT_OK_BTN")
+        time.sleep(0.35)
+        self._click_abs(int(log_out_ok_target[0]), int(log_out_ok_target[1]), "LOG_OUT_OK_BTN")
+        time.sleep(0.5)
+        self._click_logout_image_if_visible(
+            "okay_btn.png",
+            label="LOG_OUT_OK_IMG",
+            confidence=0.86,
+            timeout_sec=0.9,
+            region=self._region_around_point(log_out_ok_target, width=420, height=220),
+        )
 
     def run_mapped_logout_sequence_for_test(self) -> bool:
-        """Run only the built-in mapped logout sequence (no account/login steps)."""
+        """Run only the built-in macOS-style logout sequence (no account/login steps)."""
         try:
+            logout_log_offset = self._get_log_size(self._log_path)
             self._run_mapped_logout_sequence()
-            return True
+            return self._wait_for_logout_to_reach_login_screen(
+                start_offset=logout_log_offset,
+                timeout_sec=max(8.0, self._login_delete_delay_sec + 3.0),
+            )
         except Exception as e:
-            bot_logger.log_error(f"Mapped logout test sequence failed: {e}")
+            bot_logger.log_error(f"Built-in logout test sequence failed: {e}")
             return False
 
     def _resolve_account_play_order(self, accounts: list[dict]) -> list[int]:
@@ -3440,6 +3854,12 @@ class Controller(ControllerSecondary):
             seen_timer_ids.add(timer_id)
             running = bool(timer.get("running", False))
             elapsed_sec, remaining_sec = self.__timer_elapsed_remaining(timer)
+            duration_sec = timer.get("durationSec")
+            if duration_sec is not None:
+                try:
+                    duration_sec = float(duration_sec)
+                except Exception:
+                    duration_sec = None
             warning_threshold = timer.get("warningThresholdSec")
             warning_sec = None
             if warning_threshold is not None:
@@ -3452,6 +3872,24 @@ class Controller(ControllerSecondary):
             was_running = bool(prev.get("running", False))
             warned = bool(prev.get("warned", False))
             critical = bool(prev.get("critical", False))
+            prev_elapsed = prev.get("elapsed_sec")
+            prev_remaining = prev.get("remaining_sec")
+            prev_duration = prev.get("duration_sec")
+            if elapsed_sec is None and prev_elapsed is not None:
+                try:
+                    elapsed_sec = float(prev_elapsed)
+                except Exception:
+                    pass
+            if remaining_sec is None and prev_remaining is not None:
+                try:
+                    remaining_sec = float(prev_remaining)
+                except Exception:
+                    pass
+            if duration_sec is None and prev_duration is not None:
+                try:
+                    duration_sec = float(prev_duration)
+                except Exception:
+                    pass
             if running:
                 current_running.add(timer_id)
                 if not was_running:
@@ -3478,6 +3916,14 @@ class Controller(ControllerSecondary):
                     bot_logger.log_info(
                         f"MY_TIMER_CRITICAL: timerId={timer_id} type={timer_type} remaining={remaining_sec:.1f}s"
                     )
+                    runtime_status.bump_counter(
+                        "my_timer_critical_count",
+                        1,
+                        my_timer_running=True,
+                        my_timer_type=timer_type,
+                        my_timer_remaining_sec=remaining_sec,
+                        my_timer_last_critical_at_epoch=time.time(),
+                    )
                     critical = True
                 if remaining_sec is not None and remaining_sec > 5.0:
                     critical = False
@@ -3485,8 +3931,36 @@ class Controller(ControllerSecondary):
                     "running": True,
                     "warned": warned,
                     "critical": critical,
+                    "timeout_seen": bool(prev.get("timeout_seen", False)),
                     "type": timer_type,
+                    "elapsed_sec": elapsed_sec,
+                    "remaining_sec": remaining_sec,
+                    "duration_sec": duration_sec,
                 }
+                timeout_seen = bool(prev.get("timeout_seen", False))
+                if (
+                    timer_type == "TimerType_Inactivity"
+                    and elapsed_sec is not None
+                    and duration_sec is not None
+                    and elapsed_sec >= max(1.0, duration_sec - 0.5)
+                    and not timeout_seen
+                ):
+                    bot_logger.log_info(
+                        f"MY_TIMER_TIMEOUT_OBSERVED: timerId={timer_id} type={timer_type} elapsed={elapsed_sec:.1f}s duration={duration_sec:.1f}s"
+                    )
+                    runtime_status.update_status(
+                        my_timer_timeout_seen=True,
+                        my_timer_timeout_at_epoch=time.time(),
+                    )
+                    timeout_seen = True
+                    self.__my_timer_state[timer_id]["timeout_seen"] = True
+                runtime_status.update_status(
+                    my_timer_running=True,
+                    my_timer_type=timer_type,
+                    my_timer_remaining_sec=remaining_sec,
+                    my_timer_elapsed_sec=elapsed_sec,
+                    my_timer_duration_sec=duration_sec,
+                )
             else:
                 if was_running:
                     bot_logger.log_info(f"MY_TIMER_STOP: timerId={timer_id} type={timer_type}")
@@ -3494,8 +3968,19 @@ class Controller(ControllerSecondary):
                     "running": False,
                     "warned": False,
                     "critical": False,
+                    "timeout_seen": bool(prev.get("timeout_seen", False)),
                     "type": timer_type,
+                    "elapsed_sec": elapsed_sec,
+                    "remaining_sec": remaining_sec,
+                    "duration_sec": duration_sec,
                 }
+                runtime_status.update_status(
+                    my_timer_running=False,
+                    my_timer_type=timer_type,
+                    my_timer_remaining_sec=remaining_sec,
+                    my_timer_elapsed_sec=elapsed_sec,
+                    my_timer_duration_sec=duration_sec,
+                )
         for timer_id, prev in list(self.__my_timer_state.items()):
             if not prev.get("running", False):
                 continue
@@ -3509,8 +3994,19 @@ class Controller(ControllerSecondary):
                 "running": False,
                 "warned": False,
                 "critical": False,
+                "timeout_seen": bool(prev.get("timeout_seen", False)),
                 "type": timer_type,
+                "elapsed_sec": None,
+                "remaining_sec": None,
+                "duration_sec": None,
             }
+            runtime_status.update_status(
+                my_timer_running=False,
+                my_timer_type=timer_type,
+                my_timer_remaining_sec=None,
+                my_timer_elapsed_sec=None,
+                my_timer_duration_sec=None,
+            )
 
     def __update_pending_target_select(
         self,
@@ -3918,6 +4414,48 @@ class Controller(ControllerSecondary):
             bot_logger.log_error(f"Failed to infer match result from game state: {e}")
         return None
 
+    def __infer_local_timeout_from_raw_dict(self, raw_dict: dict) -> bool:
+        try:
+            messages = raw_dict.get("greToClientEvent", {}).get("greToClientMessages", [])
+            for message in messages:
+                if message.get("type") != "GREMessageType_GameStateMessage":
+                    continue
+                game_state_msg = message.get("gameStateMessage", {})
+                game_info = game_state_msg.get("gameInfo", {})
+                results = game_info.get("results", [])
+                if not results:
+                    continue
+                winning_team_id = None
+                timeout_seen = False
+                for result in results:
+                    if result.get("result") == "ResultType_WinLoss" and "winningTeamId" in result:
+                        winning_team_id = result.get("winningTeamId")
+                    if result.get("reason") == "ResultReason_Timeout":
+                        timeout_seen = True
+                if not timeout_seen or winning_team_id is None:
+                    continue
+
+                players = game_state_msg.get("players", [])
+                my_team_id = None
+                if self.__system_seat_id is not None:
+                    for player in players:
+                        if player.get("systemSeatNumber") == self.__system_seat_id:
+                            my_team_id = player.get("teamId")
+                            break
+                if my_team_id is None:
+                    seat_ids = message.get("systemSeatIds") or []
+                    for player in players:
+                        if player.get("systemSeatNumber") in seat_ids:
+                            my_team_id = player.get("teamId")
+                            break
+                if my_team_id is None:
+                    continue
+
+                return winning_team_id != my_team_id
+        except Exception as e:
+            bot_logger.log_error(f"Failed to infer timeout loss from game state: {e}")
+        return False
+
     def __update_inst_id__grp_id_dict(self, object_dict_arr):
         for object_dict in object_dict_arr:
             if object_dict['instanceId'] not in self.__inst_id_grp_id_dict.keys():
@@ -3934,6 +4472,12 @@ class Controller(ControllerSecondary):
         outcome = self.__infer_match_won_from_raw_dict(raw_dict)
         if outcome is not None:
             self.__last_match_won = outcome
+        if self.__infer_local_timeout_from_raw_dict(raw_dict):
+            bot_logger.log_info("MY_TIMER_TIMEOUT_RESULT_OBSERVED: local match loss reason=ResultReason_Timeout")
+            runtime_status.update_status(
+                my_timer_timeout_seen=True,
+                my_timer_timeout_at_epoch=time.time(),
+            )
 
         game_state = Controller.__get_game_state_from_raw_dict(raw_dict, fallback_seat_id=self.__system_seat_id or 1)
         self.updated_game_state.update(game_state)
@@ -3953,6 +4497,8 @@ class Controller(ControllerSecondary):
             pass
 
         turn_info_dict = self.updated_game_state.get_turn_info()
+        runtime_status.touch_playerlog_event(state=str(self._get_state_from_log()), turn_info=turn_info_dict)
+        runtime_status.set_mode("in_game", bot_state=str(self._get_state_from_log()), turn_info=turn_info_dict or {})
         is_complete = self.updated_game_state.is_complete()
         pending_count = self.updated_game_state.get_pending_message_count()
         stack_count = self.updated_game_state.get_zone_object_count("ZoneType_Stack")
@@ -3986,12 +4532,16 @@ class Controller(ControllerSecondary):
                     if self.__decision_execution_thread is not None:
                         self.__decision_execution_thread.cancel()
                         self.__decision_execution_thread = None
+                        self.__decision_delay_key = None
+                        self.__decision_delay_scheduled_at = 0.0
                     bot_logger.log_info(f"Deferring decision: stack has {stack_count} object(s)")
                     return
             else:
                 if self.__decision_execution_thread is not None:
                     self.__decision_execution_thread.cancel()
                     self.__decision_execution_thread = None
+                    self.__decision_delay_key = None
+                    self.__decision_delay_scheduled_at = 0.0
                 bot_logger.log_info(f"Deferring decision: stack has {stack_count} object(s)")
                 return
 
@@ -3999,6 +4549,9 @@ class Controller(ControllerSecondary):
             if self.__decision_execution_thread is not None:
                 self.__decision_execution_thread.cancel()
                 self.__decision_execution_thread = None
+                self.__decision_delay_key = None
+                self.__decision_delay_scheduled_at = 0.0
+            runtime_status.set_intentional_wait(1.2, "pending_message_wait")
             bot_logger.log_info(f"Deferring decision: pendingMessageCount={pending_count}")
             return
 
@@ -4006,6 +4559,9 @@ class Controller(ControllerSecondary):
             if self.__decision_execution_thread is not None:
                 self.__decision_execution_thread.cancel()
                 self.__decision_execution_thread = None
+                self.__decision_delay_key = None
+                self.__decision_delay_scheduled_at = 0.0
+            runtime_status.set_intentional_wait(2.0, "pay_costs_wait")
             bot_logger.log_info("Pausing decision while pay costs prompt is active")
             my_seat = self.__system_seat_id
             if (
@@ -4043,6 +4599,9 @@ class Controller(ControllerSecondary):
             if self.__decision_execution_thread is not None:
                 self.__decision_execution_thread.cancel()
                 self.__decision_execution_thread = None
+                self.__decision_delay_key = None
+                self.__decision_delay_scheduled_at = 0.0
+            runtime_status.set_intentional_wait(2.0, "target_selection_wait")
             bot_logger.log_info("Pausing decision while target selection is pending")
             # Let target selection resolve before scheduling new decisions.
             return
@@ -4053,19 +4612,50 @@ class Controller(ControllerSecondary):
             if my_seat is None:
                 bot_logger.log_info("Skipping decision (local systemSeatId unknown)")
             elif turn_info_dict['decisionPlayer'] == my_seat and self.__has_mulled_keep:
-                # Cancel any existing timer before starting a new one
+                delay_key = (
+                    int(turn_info_dict.get("turnNumber", -1) or -1),
+                    str(turn_info_dict.get("phase") or ""),
+                    str(turn_info_dict.get("step") or ""),
+                    int(turn_info_dict.get("activePlayer", -1) or -1),
+                    int(turn_info_dict.get("decisionPlayer", -1) or -1),
+                )
+                existing_alive = (
+                    self.__decision_execution_thread is not None
+                    and getattr(self.__decision_execution_thread, "is_alive", lambda: False)()
+                )
+                if existing_alive and self.__decision_delay_key == delay_key:
+                    bot_logger.log_info(
+                        "Decision delay already armed for current priority window; keeping existing timer."
+                    )
+                    return
                 if self.__decision_execution_thread is not None:
                     self.__decision_execution_thread.cancel()
+                    self.__decision_execution_thread = None
 
                 def _decision_if_still_my_priority():
                     try:
+                        self.__decision_execution_thread = None
+                        self.__decision_delay_key = None
+                        self.__decision_delay_scheduled_at = 0.0
                         ti = self.updated_game_state.get_turn_info() or {}
                         if self.__should_pause_for_targets():
                             bot_logger.log_info("Deferring decision; target selection still pending")
+                            runtime_status.set_intentional_wait(2.0, "target_selection_wait")
                             self.__decision_execution_thread = threading.Timer(0.5, _decision_if_still_my_priority)
+                            self.__decision_delay_key = delay_key
+                            self.__decision_delay_scheduled_at = time.time()
                             self.__decision_execution_thread.start()
                             return
                         still_my_priority = (ti.get('decisionPlayer') == my_seat)
+                        runtime_status.clear_intentional_wait()
+                        bot_logger.log_info(
+                            "Decision delay fired: turn={} phase={} step={} still_my_priority={}".format(
+                                ti.get("turnNumber"),
+                                ti.get("phase"),
+                                ti.get("step"),
+                                still_my_priority,
+                            )
+                        )
                         if still_my_priority and self.__decision_callback and self.__has_mulled_keep:
                             self.__decision_callback(self.updated_game_state)
                         else:
@@ -4073,8 +4663,23 @@ class Controller(ControllerSecondary):
                                 f"Skipping delayed decision (decisionPlayer={ti.get('decisionPlayer')}, my_seat={my_seat})"
                             )
                     except Exception as e:
+                        runtime_status.clear_intentional_wait()
                         bot_logger.log_error(f"Error in delayed decision callback: {e}")
 
+                runtime_status.set_intentional_wait(
+                    max(2.0, float(self.__decision_delay) + 2.5),
+                    "decision_delay_wait",
+                )
+                self.__decision_delay_key = delay_key
+                self.__decision_delay_scheduled_at = time.time()
+                bot_logger.log_info(
+                    "Arming delayed decision: turn={} phase={} step={} delay={}s".format(
+                        delay_key[0],
+                        delay_key[1],
+                        delay_key[2],
+                        self.__decision_delay,
+                    )
+                )
                 self.__decision_execution_thread = threading.Timer(self.__decision_delay, _decision_if_still_my_priority)
                 self.__decision_execution_thread.start()
 
@@ -4146,6 +4751,12 @@ class Controller(ControllerSecondary):
                         game_state_dict[key] = raw_game_state_dict[key]
                 generated_game_state = GameState(game_state_dict)
                 return_game_state.update(generated_game_state)
+            elif message['type'] == "GREMessageType_TimerStateMessage":
+                timer_state = message.get('timerStateMessage', {}) or {}
+                timers = timer_state.get('timers', []) or []
+                if timers:
+                    timer_game_state = GameState({'timers': timers})
+                    return_game_state.update(timer_game_state)
             # Also parse ActionsAvailableReq for available actions
             elif message['type'] == "GREMessageType_ActionsAvailableReq":
                 req = message.get('actionsAvailableReq', {})

@@ -8,6 +8,7 @@ import os
 import traceback
 import threading
 import bot_logger
+import runtime_status
 
 
 class Game:
@@ -84,6 +85,7 @@ class Game:
     def start(self):
         self._debug("Game.start() called")
         self._stop_requested = False
+        runtime_status.set_mode("starting")
         self._refresh_card_data()
         try:
             CardInfo.refresh_missing_cards()
@@ -102,6 +104,7 @@ class Game:
         if self._stop_requested:
             self._debug("Match ended but stop requested - not restarting")
             return
+        runtime_status.set_mode("match_end")
         self._debug("Match ended - scheduling restart in 10 seconds")
         self._human_log("\n=== MATCH ENDED ===")
         if won is True:
@@ -121,6 +124,7 @@ class Game:
         if self._stop_requested:
             self._debug("Stop requested - skipping restart")
             return
+        runtime_status.set_mode("restarting")
         self._debug("Restarting game...")
         self._human_log("=== STARTING NEW GAME ===\n")
 
@@ -155,6 +159,7 @@ class Game:
         """Stop the game cleanly (cancel timers, stop log monitor, prevent restarts)."""
         self._stop_requested = True
         self.game_started = False
+        runtime_status.set_mode("stopped")
 
         for timer in list(self._timers):
             try:
@@ -178,6 +183,7 @@ class Game:
         if self._stop_requested:
             return
         self._debug(f"Mulligan decision called with {len(card_list)} cards")
+        runtime_status.set_mode("in_game")
         self._human_log("Keeping hand")
         self.game_started = True  # Mark game as started after mulligan
         keep = self.ai.generate_keep(card_list)
@@ -277,6 +283,7 @@ class Game:
     def decision_method(self, current_game_state: GameState):
         if self._stop_requested:
             return
+        runtime_status.clear_intentional_wait()
         # Don't do anything before game has started
         if not self.game_started:
             self._debug("decision_method called but game not started yet, ignoring")
@@ -304,6 +311,18 @@ class Game:
 
             self._debug(f"Turn info: turn={turn_num}, active={active_player}, phase={phase}, step={step}")
             self._debug(f"Decision player={decision_player}, priority={priority_player}")
+            runtime_status.set_mode(
+                "in_game",
+                bot_state="BotState.IN_GAME",
+                turn_info={
+                    "turnNumber": turn_num,
+                    "phase": phase,
+                    "step": step,
+                    "activePlayer": active_player,
+                    "priorityPlayer": priority_player,
+                    "decisionPlayer": decision_player,
+                },
+            )
 
             if active_player == decision_player and turn_num != self._last_action_delay_turn:
                 self._debug("Active turn delay: waiting 2 seconds before actions")
@@ -373,6 +392,17 @@ class Game:
                 return
 
             move_name = list(move.keys())[0]
+            runtime_status.touch_decision(
+                move_name=move_name,
+                turn_info={
+                    "turnNumber": turn_num,
+                    "phase": phase,
+                    "step": step,
+                    "activePlayer": active_player,
+                    "priorityPlayer": priority_player,
+                    "decisionPlayer": decision_player,
+                },
+            )
             bot_logger.log_decision(move_name, move.get(move_name))
             self._debug(f"Executing move: {move_name}")
 
