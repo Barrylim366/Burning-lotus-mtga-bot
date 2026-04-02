@@ -24,3 +24,14 @@ If the user states something factually incorrect, the agent should correct it cl
 ## Session Learnings
 
 Whenever the agent learns something relevant during a session (e.g., root cause, stable workaround, configuration caveat), it must append a short entry to `learning.md`.
+
+## Supervisor Debug Workflow
+
+If the user asks to run the "supervisor workflow", the Codex agent should:
+
+1. Start the bot through the supervisor in stop-after-incident mode, not as an endless auto-requeue loop.
+2. Let the supervisor recover to `HOME`, send the Codex `stuck` notification, and then stop itself.
+3. Treat the supervisor behavior itself as correct unless there is direct evidence that recovery/notification failed; the default response after `stuck` is to debug and fix the bot logic that got stuck.
+4. Inspect the newest incident bundle, compare `bot.log` and `Player.log`, and identify the concrete root cause in gameplay/control flow.
+5. If the same failure repeats or the available evidence is insufficient, add targeted debug artifacts in code at the failing step (for example extra screenshots, state dumps, click-context bundles, or post-action verification images) before rerunning.
+6. After applying bot-logic fixes, restart the supervisor workflow again only when the previous incident has been analyzed.
