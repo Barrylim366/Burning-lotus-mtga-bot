@@ -50,6 +50,7 @@ Windows quick test for built-in account switch flow (without starting a full mat
 - Double-click `test_logout_record.bat` in the repo root.
 - It runs the current built-in full account-switch path from code (logout + login + post-login handling).
 - For logout-only testing, run: `python tools/test_builtin_logout.py`
+- The active controller flow in `Controller/MTGAController/Controller.py` again includes queue spam, post-match dismissal, and built-in account switching as one continuous runtime path.
 
 ## UI Updates
 
@@ -161,6 +162,7 @@ The runtime tries to locate MTGA dynamically:
 - On Windows, the setup check now uses the MTGA client area from Win32 instead of border-offset heuristics
 - Then verifies/fallbacks with visual anchor checks
 - Stores a session `arena_region` and re-acquires it on repeated verification failures
+- During combat, if live re-acquire fails briefly, the controller now reuses the last known good `arena_region` instead of sending blind desktop clicks
 - Opponent avatar target selection uses the same direct 1920-relative mapping path as other calibrated points (`_map_abs_point_to_arena`), without avatar-specific fallback heuristics
 
 
@@ -196,6 +198,7 @@ The runtime tries to locate MTGA dynamically:
   - Subwindow minimum sizes are now derived from actual visible content bounds to avoid clipping without forcing oversized windows.
 
 5) If no valid license is active, the app prompts for your **License Key** automatically on startup or before bot start.
+   - The **License** dialog also supports manual token/file import for compatibility paths and shows an emergency-code field.
 
 6) Start Bot (only possible with valid activated license).
    - Before the bot starts, the app checks that MTGA is visible with an exact windowed `1920x1080` client area and that Windows display scaling is `100%`.
@@ -210,6 +213,10 @@ Stop bot any time with **Mouse Wheel**.
 - Runtime checks now include periodic online re-validation against `https://burninglotusbot.com/api/validate-license`.
 - Without a valid license, **Start Bot** remains disabled and the UI shows a hint.
 - If runtime validation fails (for example revoked/deleted server-side), the app opens the license key prompt automatically so re-activation can be done immediately (no app restart required).
+- The **License** dialog supports both the normal online **License Key** activation flow and compatibility fallbacks:
+  - paste/import a stored license token or license file
+  - copy the current machine/device id
+  - enter an emergency code (current validator returns unsupported in this build, but the UI/API path remains available for compatibility)
 
 Public key location:
 - Put your EC P-256 JWK in `config/public_key.jwk` (fields: `kty`, `crv`, `x`, `y`).

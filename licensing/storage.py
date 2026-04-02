@@ -48,3 +48,11 @@ def save_license_state(data: dict[str, Any]) -> Path:
     payload = data if isinstance(data, dict) else {}
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def load_status_cache() -> dict[str, Any]:
+    return load_license_state()
+
+
+def save_status_cache(data: dict[str, Any]) -> Path:
+    return save_license_state(data)
