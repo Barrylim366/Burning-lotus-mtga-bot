@@ -1161,6 +1161,60 @@ class Controller(ControllerSecondary):
         bot_logger.log_error(f"{label}: image not found within {timeout:.1f}s")
         return False
 
+    def _locate_image_center(
+        self,
+        image_path: str,
+        label: str,
+        confidence: float = 0.82,
+        timeout: float = 20.0,
+        region: tuple[int, int, int, int] | None = None,
+    ) -> tuple[int, int] | None:
+        try:
+            import pyautogui
+        except Exception as e:
+            bot_logger.log_error(f"{label}: pyautogui not available: {e}")
+            return None
+
+        if not os.path.exists(image_path):
+            bot_logger.log_error(f"{label}: image not found at {image_path}")
+            return None
+
+        start = time.time()
+        region_info = ""
+        if region is not None:
+            try:
+                region = (
+                    int(region[0]),
+                    int(region[1]),
+                    max(1, int(region[2])),
+                    max(1, int(region[3])),
+                )
+                region_info = f", region={region}"
+            except Exception:
+                region = None
+        bot_logger.log_info(
+            f"{label}: locating image with confidence={confidence:.2f}, timeout={timeout:.1f}s{region_info}."
+        )
+        while (time.time() - start) < timeout:
+            if self._stop_requested:
+                bot_logger.log_info(f"{label}: locate aborted (stop requested).")
+                return None
+            try:
+                if region is not None:
+                    pos = pyautogui.locateCenterOnScreen(image_path, confidence=confidence, region=region)
+                else:
+                    pos = pyautogui.locateCenterOnScreen(image_path, confidence=confidence)
+            except Exception:
+                pos = None
+            if pos:
+                return (int(pos.x), int(pos.y))
+            time.sleep(0.5)
+            if int((time.time() - start) * 10) % 20 == 0:
+                elapsed = time.time() - start
+                bot_logger.log_info(f"{label}: still locating ({elapsed:.1f}s elapsed).")
+        bot_logger.log_error(f"{label}: image not found within {timeout:.1f}s")
+        return None
+
     def _get_log_size(self, path: str) -> int:
         try:
             return int(os.path.getsize(path))
@@ -2378,24 +2432,167 @@ class Controller(ControllerSecondary):
     def click_assign_damage_done(self):
         """Click the Done button during damage assignment"""
         runtime_status.set_mode("in_game", bot_state=str(self._get_state_from_log()))
+        arena = self._ensure_arena_region(force_reacquire=True)
+        template_point = None
+        if arena is not None:
+            button_img = os.path.join(self._buttons_dir(), "assign_damage_done.png")
+            # The Assign Damage Done button lives near the lower arena center; search there first
+            # because saved click targets can still be stale legacy desktop coordinates.
+            template_region = (
+                int(arena[0] + 480),
+                int(arena[1] + 700),
+                960,
+                280,
+            )
+            if os.path.exists(button_img):
+                template_point = self._locate_image_center(
+                    button_img,
+                    "ASSIGN_DAMAGE_DONE_IMG_LOCATE",
+                    confidence=0.82,
+                    timeout=1.5,
+                    region=template_region,
+                )
+                if template_point is not None:
+                    bot_logger.log_info(
+                        f"ASSIGN_DAMAGE_DONE template located at {template_point} in region={template_region}."
+                    )
+                    for attempt in range(1, 4):
+                        self._click_abs(template_point[0], template_point[1], f"ASSIGN_DAMAGE_DONE_IMG_{attempt}")
+                        time.sleep(0.45)
+                        if not self._is_assign_damage_step_active():
+                            bot_logger.log_info(
+                                f"ASSIGN_DAMAGE_DONE completed after template point attempt {attempt}."
+                            )
+                            return
+                else:
+                    for attempt in range(1, 3):
+                        if self._click_image(
+                        button_img,
+                        f"ASSIGN_DAMAGE_DONE_IMG_{attempt}",
+                        confidence=0.80,
+                        timeout=1.2,
+                        region=template_region,
+                        ):
+                            time.sleep(0.45)
+                            if not self._is_assign_damage_step_active():
+                                bot_logger.log_info(
+                                    f"ASSIGN_DAMAGE_DONE completed after template attempt {attempt}."
+                                )
+                                return
+
         target, source = self._map_abs_point_to_arena(
             self.assign_damage_done_coors,
             label="ASSIGN_DAMAGE_DONE",
             force_reacquire=True,
             apply_correction=False,
         )
+        if source == "arena_relative_1920_direct":
+            local_x = int(target[0] - arena[0]) if arena is not None else int(self.assign_damage_done_coors[0])
+            local_y = int(target[1] - arena[1]) if arena is not None else int(self.assign_damage_done_coors[1])
+            plausible = 720 <= local_x <= 1220 and 760 <= local_y <= 980
+            if not plausible:
+                bot_logger.log_error(
+                    "ASSIGN_DAMAGE_DONE config appears implausible for the lower-center done button: "
+                    f"local=({local_x}, {local_y}) raw={self.assign_damage_done_coors}. "
+                    "Skipping stale coordinate fallback."
+                )
+                self._write_assign_damage_debug_bundle(
+                    reason="assign_damage_stale_config",
+                    mapped_point=target,
+                    source=f"{source}_implausible",
+                )
+                return
         bot_logger.log_info(
             f"ASSIGN_DAMAGE_DONE target: source={source} arena={self._arena_region} raw={self.assign_damage_done_coors} mapped={target}"
         )
-        bot_logger.log_click(target[0], target[1], "ASSIGN_DAMAGE_DONE")
-        runtime_status.touch_input("ASSIGN_DAMAGE_DONE", target)
-        self.input.move_abs(target[0], target[1])
-        time.sleep(0.5)
-        self.input.left_click(1)
-        time.sleep(0.2)
-        # Maybe click twice to be sure? The user said "click", usually one is enough but delays help.
-        # Just one click for now as per other methods.
-        bot_logger.log_info("Clicked Assign Damage Done button")
+        if source == "absolute_no_arena":
+            bot_logger.log_error(
+                "ASSIGN_DAMAGE_DONE aborted: arena_region unavailable, refusing absolute desktop click."
+            )
+            self._write_assign_damage_debug_bundle(
+                reason="assign_damage_no_arena",
+                mapped_point=target,
+                source=source,
+            )
+            return
+
+        for attempt in range(1, 4):
+            self._click_abs(target[0], target[1], f"ASSIGN_DAMAGE_DONE_{attempt}")
+            time.sleep(0.45)
+            if not self._is_assign_damage_step_active():
+                bot_logger.log_info(
+                    f"ASSIGN_DAMAGE_DONE completed after attempt {attempt}."
+                )
+                return
+
+        bot_logger.log_error(
+            "ASSIGN_DAMAGE_DONE still active after 3 low-level clicks; writing debug bundle."
+        )
+        self._write_assign_damage_debug_bundle(
+            reason="assign_damage_click_not_accepted",
+            mapped_point=target,
+            source=source,
+        )
+
+    def _is_assign_damage_step_active(self) -> bool:
+        try:
+            turn_info = self.updated_game_state.get_turn_info() or {}
+            return str(turn_info.get("step") or "") == "Step_CombatDamage"
+        except Exception:
+            return False
+
+    def _write_assign_damage_debug_bundle(
+        self,
+        *,
+        reason: str,
+        mapped_point: tuple[int, int],
+        source: str,
+    ) -> None:
+        try:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            debug_dir = Path(bot_logger.ensure_debug_dir(f"assign-damage-{stamp}"))
+            turn_info = self.updated_game_state.get_turn_info() or {}
+            payload = {
+                "reason": reason,
+                "source": source,
+                "raw_point": list(self.assign_damage_done_coors),
+                "mapped_point": [int(mapped_point[0]), int(mapped_point[1])],
+                "arena_region": list(self._arena_region) if self._arena_region is not None else None,
+                "cached_arena_region": list(self._last_good_arena_region) if self._last_good_arena_region is not None else None,
+                "turn_info": turn_info,
+                "bot_state": str(self._get_state_from_log()),
+            }
+            with (debug_dir / "assign_damage_state.json").open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+
+            try:
+                with open(bot_logger.BOT_LOG_FILE, "r", encoding="utf-8", errors="replace") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    size = handle.tell()
+                    start = max(0, size - 120000)
+                    handle.seek(start, os.SEEK_SET)
+                    tail = handle.read()
+                with (debug_dir / "log_tail.txt").open("w", encoding="utf-8") as handle:
+                    handle.write(tail)
+            except Exception:
+                pass
+
+            if self._vision is not None:
+                full = self._vision.capture(None)
+                self._vision.save_image(full, str(debug_dir / "full_screen.png"))
+                if self._arena_region is not None:
+                    arena_img = self._vision.capture(self._arena_region)
+                    self._vision.save_image(arena_img, str(debug_dir / "arena_region.png"))
+                focus_region = (
+                    max(self.screen_bounds[0][0], int(mapped_point[0]) - 220),
+                    max(self.screen_bounds[0][1], int(mapped_point[1]) - 160),
+                    440,
+                    320,
+                )
+                focus_img = self._vision.capture(focus_region)
+                self._vision.save_image(focus_img, str(debug_dir / "assign_damage_focus.png"))
+        except Exception as exc:
+            bot_logger.log_error(f"Failed to write assign-damage debug bundle: {exc}")
 
     def __handle_inactivity_timeout(self):
         """Handle timeout when no activity for 3 minutes - click next button repeatedly"""

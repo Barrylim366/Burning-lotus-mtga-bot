@@ -22,6 +22,28 @@ from vision.vision import VisionEngine
 from vision.window_locator import ArenaRegionProvider
 
 
+def load_default_concede_rel() -> tuple[int, int]:
+    default_rel = (1286, 611)
+    config_path = ROOT_DIR / "calibration_config.json"
+    try:
+        if not config_path.is_file():
+            return default_rel
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        click_targets = data.get("click_targets", {})
+        concede = click_targets.get("concede", {})
+        x = int(concede.get("x"))
+        y = int(concede.get("y"))
+        if not (0 <= x <= 1920 and 0 <= y <= 1080):
+            return default_rel
+        return (x, y)
+    except Exception:
+        return default_rel
+
+
+DEFAULT_CONCEDE_REL = load_default_concede_rel()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run MTGA bot under a stuck-recovery supervisor.")
     parser.add_argument("--poll-sec", type=float, default=2.0, help="Supervisor polling interval.")
@@ -61,13 +83,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--concede-rel-x",
         type=int,
-        default=1714,
+        default=int(DEFAULT_CONCEDE_REL[0]),
         help="1920-relative X coordinate for the in-game Concede button after ESC opens options.",
     )
     parser.add_argument(
         "--concede-rel-y",
         type=int,
-        default=814,
+        default=int(DEFAULT_CONCEDE_REL[1]),
         help="1920-relative Y coordinate for the in-game Concede button after ESC opens options.",
     )
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Bot command after `--`. Defaults to `python run_bot.py`.")
@@ -412,6 +434,7 @@ def attempt_recovery(
             vision=vision,
             provider=provider,
             playerlog_path=playerlog_path,
+            incident_dir=incident_dir,
             concede_rel=concede_rel,
             result=result,
         ):
@@ -481,6 +504,7 @@ def concede_to_home(
     vision: VisionEngine,
     provider: ArenaRegionProvider,
     playerlog_path: str,
+    incident_dir: str,
     concede_rel: tuple[int, int],
     result: dict,
 ) -> bool:
@@ -494,25 +518,71 @@ def concede_to_home(
     time.sleep(1.0)
 
     concede_abs = (int(arena[0] + concede_rel[0]), int(arena[1] + concede_rel[1]))
-    concede_region = (int(arena[0]), int(arena[1]), int(arena[2]), int(arena[3]))
-    concede_match = find_template_point_in_region(
+    concede_region = build_focus_region(
+        center=concede_abs,
+        bounds=arena,
+        width=760,
+        height=360,
+    )
+    concede_template = str(ROOT_DIR / "Buttons" / "concede.png")
+    capture_concede_debug(
+        incident_dir=incident_dir,
         vision=vision,
-        template_path=str(ROOT_DIR / "Buttons" / "concede.png"),
-        region=concede_region,
-        threshold=0.76,
+        arena=arena,
+        focus_region=concede_region,
+        stage="after_escape",
+        extra={
+            "concede_abs": [int(concede_abs[0]), int(concede_abs[1])],
+            "concede_region": [int(v) for v in concede_region],
+        },
+    )
+    concede_match = find_template_match_in_region(
+        vision=vision,
+        template_path=concede_template,
+        region=arena,
+        threshold=0.72,
     )
     if concede_match is not None:
-        click_low_level(input_controller, concede_match)
-        result["actions"].append(f"concede_template_click:{concede_match[0]},{concede_match[1]}")
+        click_low_level(input_controller, concede_match["point"])
+        result["actions"].append(
+            f"concede_template_click_arena:{concede_match['point'][0]},{concede_match['point'][1]} score={concede_match['score']:.3f}"
+        )
         time.sleep(0.3)
-        click_low_level(input_controller, concede_match)
-        result["actions"].append("concede_template_click_retry")
+        click_low_level(input_controller, concede_match["point"])
+        result["actions"].append("concede_template_click_arena_retry")
     else:
-        click_low_level(input_controller, concede_abs)
-        result["actions"].append(f"concede_click_fallback:{concede_abs[0]},{concede_abs[1]}")
-        time.sleep(0.3)
-        click_low_level(input_controller, concede_abs)
-        result["actions"].append("concede_click_fallback_retry")
+        concede_match = find_template_match_in_region(
+            vision=vision,
+            template_path=concede_template,
+            region=concede_region,
+            threshold=0.72,
+        )
+        if concede_match is not None:
+            click_low_level(input_controller, concede_match["point"])
+            result["actions"].append(
+                f"concede_template_click_focus:{concede_match['point'][0]},{concede_match['point'][1]} score={concede_match['score']:.3f}"
+            )
+            time.sleep(0.3)
+            click_low_level(input_controller, concede_match["point"])
+            result["actions"].append("concede_template_click_focus_retry")
+        else:
+            result["actions"].append("concede_template_not_found")
+            capture_concede_debug(
+                incident_dir=incident_dir,
+                vision=vision,
+                arena=arena,
+                focus_region=concede_region,
+                stage="template_not_found",
+                extra={
+                    "concede_abs": [int(concede_abs[0]), int(concede_abs[1])],
+                    "concede_region": [int(v) for v in concede_region],
+                },
+            )
+            click_low_level(input_controller, concede_abs)
+            result["actions"].append(f"concede_click_fallback:{concede_abs[0]},{concede_abs[1]}")
+            time.sleep(0.3)
+            click_low_level(input_controller, concede_abs)
+            result["actions"].append("concede_click_fallback_retry")
     time.sleep(1.2)
 
     if click_template_in_region(
@@ -537,6 +607,17 @@ def concede_to_home(
             break
         time.sleep(0.6)
 
+    capture_concede_debug(
+        incident_dir=incident_dir,
+        vision=vision,
+        arena=arena,
+        focus_region=concede_region,
+        stage="post_concede_wait",
+        extra={
+            "concede_abs": [int(concede_abs[0]), int(concede_abs[1])],
+            "concede_region": [int(v) for v in concede_region],
+        },
+    )
     return recover_to_home(
         input_controller=input_controller,
         vision=vision,
@@ -606,6 +687,56 @@ def click_template_in_region(
         return False
 
 
+def build_focus_region(
+    *,
+    center: tuple[int, int],
+    bounds: tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    bx, by, bw, bh = (int(bounds[0]), int(bounds[1]), int(bounds[2]), int(bounds[3]))
+    cx, cy = (int(center[0]), int(center[1]))
+    x = max(bx, min(cx - (width // 2), bx + bw - width))
+    y = max(by, min(cy - (height // 2), by + bh - height))
+    return (int(x), int(y), int(min(width, bw)), int(min(height, bh)))
+
+
+def capture_concede_debug(
+    *,
+    incident_dir: str,
+    vision: VisionEngine,
+    arena: tuple[int, int, int, int],
+    focus_region: tuple[int, int, int, int],
+    stage: str,
+    extra: dict | None = None,
+) -> None:
+    payload = {
+        "stage": str(stage),
+        "arena": [int(v) for v in arena],
+        "focus_region": [int(v) for v in focus_region],
+    }
+    if extra:
+        payload.update(extra)
+    try:
+        with (Path(incident_dir) / f"concede_debug_{stage}.json").open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+    except Exception:
+        pass
+    try:
+        vision.begin_tick()
+        full = vision.capture(None)
+        if full is not None:
+            vision.save_image(full, str(Path(incident_dir) / f"concede_debug_{stage}_full.png"))
+        arena_img = vision.capture(arena)
+        if arena_img is not None:
+            vision.save_image(arena_img, str(Path(incident_dir) / f"concede_debug_{stage}_arena.png"))
+        focus_img = vision.capture(focus_region)
+        if focus_img is not None:
+            vision.save_image(focus_img, str(Path(incident_dir) / f"concede_debug_{stage}_focus.png"))
+    except Exception:
+        pass
+
+
 def resolve_mtga_region(provider: ArenaRegionProvider) -> tuple[int, int, int, int] | None:
     region = provider.reacquire()
     if region is not None:
@@ -648,13 +779,13 @@ def looks_like_match_end(log_tail: str) -> bool:
     return any(marker in text for marker in markers)
 
 
-def find_template_point_in_region(
+def find_template_match_in_region(
     *,
     vision: VisionEngine,
     template_path: str,
     region: tuple[int, int, int, int],
     threshold: float,
-) -> tuple[int, int] | None:
+) -> dict | None:
     if not os.path.isfile(template_path):
         return None
     try:
@@ -665,7 +796,10 @@ def find_template_point_in_region(
         match = vision.find_template(image, template_path, threshold=threshold)
         if match is None:
             return None
-        return (int(region[0] + match.x), int(region[1] + match.y))
+        return {
+            "point": (int(region[0] + match.x), int(region[1] + match.y)),
+            "score": float(match.score),
+        }
     except Exception:
         return None
 

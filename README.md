@@ -170,6 +170,7 @@ The runtime tries to locate MTGA dynamically:
 - During combat, if live re-acquire fails briefly, the controller now reuses the last known good `arena_region` instead of sending blind desktop clicks
 - During normal in-game hand interaction, the controller now also reuses the last known good `arena_region` if live re-acquire fails, so regular cast/play scans do not drop back to raw desktop coordinates mid-match
 - During active `SelectN` / target-selection flows, the controller now also reuses the last known good `arena_region` if live re-acquire fails, so hand scans stay window-relative instead of falling back to raw desktop coordinates
+- `AssignDamage Done` now first template-matches `Buttons/assign_damage_done.png` in the lower center of the detected arena and only falls back to the saved click target if the image click does not clear `Step_CombatDamage`; it still writes an `assign-damage-<timestamp>/` debug bundle with full-screen, arena crop, focus crop, and state JSON when damage assignment remains stuck
 - Opponent avatar target selection uses the same direct 1920-relative mapping path as other calibrated points (`_map_abs_point_to_arena`), without avatar-specific fallback heuristics
 
 
@@ -528,7 +529,10 @@ Default behavior:
   - Late `TimerStateMessage` updates can omit `elapsedSec` / `remainingSec`; the controller now preserves the last known local inactivity-timer values instead of overwriting them with `null`, so the supervisor's rope-stall trigger still fires
   - Legitimate controller wait phases now publish short `intentional_wait` windows too: pending-message, target-selection, pay-costs, and delayed own-priority decision scheduling no longer look like rope-stalls to the supervisor while the bot is intentionally waiting to act
   - The delayed own-priority decision timer is now keyed per turn/phase/step/active-player window, so repeated `GameState` / `TimerStateMessage` updates from the same priority state no longer keep canceling and re-arming the bot's 4-second decision callback forever
-  - The in-game `Concede` step now first searches a focused ROI for `Buttons/concede.png` and clicks the matched button center; the old 1920-relative concede coordinate is only kept as a fallback if the template is not found
+  - The in-game `Concede` step now searches `Buttons/concede.png` across the full detected arena first and logs the match score, then retries inside the focused ROI around the calibrated/UI target, and only then falls back to the calibrated coordinate itself
+  - `Assign Damage Done` now keeps and reuses the first matched `assign_damage_done.png` point for repeated low-level clicks; if the saved `assign_damage_done` calibration is outside a plausible lower-center done-button band, the controller now skips that stale coordinate instead of clicking the wrong UI element
+  - The supervisor now reads its default `Concede` fallback from `calibration_config.json` only when that saved point is already a valid 1920-relative in-window target; otherwise it uses the same `1286,611` default as the UI path instead of the older mismatched hardcoded fallback
+  - Every failed or ambiguous in-game `Concede` attempt now writes targeted debug artifacts into the incident bundle (`concede_debug_after_escape_*`, `concede_debug_template_not_found_*`, `concede_debug_post_concede_wait_*`) so the ESC menu and button region can be inspected directly
   - If anchor-based arena reacquire fails during an in-game recovery, the supervisor now still uses the detected MTGA client window region and does not skip the `Concede` attempt just because no known UI anchor matched
   - After a successful concede, the supervisor now watches `Player.log` for `MatchEndScene` / `MatchCompleted` / `IntermissionReq` markers and clicks the arena center to dismiss the defeat/victory screen before trying `ESC`/`HOME` recovery
   - The recovery block is now crash-hardened: if any exception happens after `incident.json` is written, the incident still gets a `recovery.json`, a `codex_notify.json`, and a `supervisor_crash.json` traceback dump instead of leaving a half-written bundle and killing the supervisor silently
@@ -562,8 +566,8 @@ Optional flags:
   - The supervisor kills the configured MTGA process names and relaunches the client before retrying `HOME` recovery
 - `--mtga-process-names "MTGA.exe,MTGALauncher.exe"`
   - Override the Windows process names used for the optional hard client restart
-- `--concede-rel-x 1714 --concede-rel-y 814`
-  - Override the 1920-relative in-game `Concede` button position used after `ESC` opens the options menu
+- `--concede-rel-x 1286 --concede-rel-y 611`
+  - Override the 1920-relative in-game `Concede` button position used after `ESC` opens the options menu; by default the supervisor only trusts a saved `calibration_config.json` `concede` point when it is already a valid 1920-relative target, otherwise it falls back to `1286,611`
 
 Codex notification behavior:
 
