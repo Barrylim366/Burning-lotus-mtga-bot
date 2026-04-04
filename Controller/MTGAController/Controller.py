@@ -60,6 +60,7 @@ class Controller(ControllerSecondary):
         self.__decision_delay_key = None
         self.__decision_delay_scheduled_at = 0.0
         self.__mulligan_execution_thread = None
+        self.__mulligan_decision_armed = False
         self.__inactivity_timer = None
         self.__inactivity_timeout = 180  # 3 minutes in seconds
         self.__has_mulled_keep = False
@@ -250,6 +251,7 @@ class Controller(ControllerSecondary):
         self.__inst_id_grp_id_dict = {}
         self.__match_end_callback = None
         self.__last_match_won: bool | None = None
+        self.__last_seen_match_id: str | None = None
         self.__attack_target_required = False
         # MTGA system seat id for the local player (can be 1 or 2)
         self.__system_seat_id = None
@@ -1407,6 +1409,30 @@ class Controller(ControllerSecondary):
             label="LOGOUT_WAIT",
         )
 
+    def _playerlog_contains_marker_since(self, markers: list[str], *, start_offset: int) -> bool:
+        if not self._log_path or not markers:
+            return False
+        try:
+            with open(self._log_path, "rb") as f:
+                f.seek(max(0, int(start_offset)))
+                delta = f.read().decode("utf-8", errors="ignore")
+        except Exception:
+            return False
+        lowered = delta.lower()
+        return any(str(marker).lower() in lowered for marker in markers)
+
+    def _set_runtime_home_mode(self, mode: str) -> None:
+        runtime_status.set_mode(
+            mode,
+            bot_state=str(BotState.HOME),
+            turn_info={},
+            my_timer_running=False,
+            my_timer_type="",
+            my_timer_remaining_sec=None,
+            my_timer_elapsed_sec=None,
+            my_timer_duration_sec=None,
+        )
+
     def _click_logout_image_if_visible(
         self,
         image_name: str,
@@ -2131,6 +2157,141 @@ class Controller(ControllerSecondary):
         self.__combat_recovery_attempts = 0
         self.__combat_recovery_deadline_ts = 0.0
 
+    def __clear_pending_select_n_state(self, reason: str) -> bool:
+        had_select_n = self.__pending_select_n is not None or self.__select_n_in_progress
+        if not had_select_n:
+            return False
+        self.__pending_select_n = None
+        self.__select_n_in_progress = False
+        self.__select_n_in_progress_since = 0.0
+        bot_logger.log_info(reason)
+        bot_logger.log_info("SelectN cleared: decisions may resume.")
+        self.__clear_target_wait_if_unblocked()
+        return True
+
+    def __clear_pending_target_select_state(self, reason: str) -> bool:
+        had_target_select = self.__pending_target_select is not None
+        if not had_target_select:
+            return False
+        self.__pending_target_select = None
+        bot_logger.log_info(reason)
+        runtime_status.clear_intentional_wait()
+        return True
+
+    def __mark_has_mulled_keep(self, reason: str) -> bool:
+        if self.__mulligan_execution_thread is not None:
+            try:
+                self.__mulligan_execution_thread.cancel()
+            except Exception:
+                pass
+            self.__mulligan_execution_thread = None
+        self.__mulligan_decision_armed = False
+        if self.__has_mulled_keep:
+            return False
+        self.__has_mulled_keep = True
+        runtime_status.clear_intentional_wait()
+        bot_logger.log_info(reason)
+        return True
+
+    def __clear_premature_mulligan_keep(self, reason: str) -> bool:
+        if not self.__has_mulled_keep:
+            return False
+        self.__has_mulled_keep = False
+        runtime_status.clear_intentional_wait()
+        bot_logger.log_info(reason)
+        return True
+
+    def __has_local_mulligan_request(self, raw_dict: dict) -> bool:
+        try:
+            messages = raw_dict.get("greToClientEvent", {}).get("greToClientMessages", [])
+            my_seat = self.__system_seat_id
+            for message in messages:
+                if message.get("type") != "GREMessageType_MulliganReq":
+                    continue
+                seat_ids = message.get("systemSeatIds") or []
+                if my_seat is None or my_seat in seat_ids:
+                    return True
+        except Exception as e:
+            bot_logger.log_error(f"Failed to inspect local mulligan request: {e}")
+        return False
+
+    def __has_pending_mulligan_state(self, raw_dict: dict | None = None) -> bool:
+        try:
+            if raw_dict is not None and self.__has_local_mulligan_request(raw_dict):
+                return True
+            turn_info = self.updated_game_state.get_turn_info() or {}
+            actions = self.updated_game_state.get_actions() or []
+            turn_number = turn_info.get("turnNumber")
+            phase = turn_info.get("phase")
+            step = turn_info.get("step")
+            has_live_turn_context = turn_number is not None and (bool(phase) or bool(step))
+            has_real_gameplay_actions = any(
+                self.__get_action_type(action) in {"ActionType_Play", "ActionType_Cast", "ActionType_Pass"}
+                for action in actions
+            )
+            if has_live_turn_context and has_real_gameplay_actions:
+                return False
+            my_seat = self.__system_seat_id
+            for player in self.updated_game_state.get_players() or []:
+                if my_seat is not None and player.get("systemSeatNumber") != my_seat:
+                    continue
+                pending_type = str(player.get("pendingMessageType") or "")
+                if pending_type.startswith("ClientMessageType_Mulligan"):
+                    return True
+        except Exception as e:
+            bot_logger.log_error(f"Failed to inspect pending mulligan state: {e}")
+        return False
+
+    def __arm_mulligan_if_needed(self, turn_info_dict: dict | None, raw_dict: dict | None = None) -> bool:
+        my_seat = self.__system_seat_id
+        if my_seat is None or self.__has_mulled_keep or not turn_info_dict:
+            return False
+        if turn_info_dict.get("decisionPlayer") != my_seat:
+            return False
+        if not self.__has_pending_mulligan_state(raw_dict):
+            return False
+        if self.__mulligan_execution_thread is not None and self.__mulligan_decision_armed:
+            runtime_status.set_intentional_wait(float(self.__intro_delay) + 2.0, "mulligan_wait")
+            bot_logger.log_info("Mulligan decision already armed; waiting for callback.")
+            return True
+        if self.__mulligan_execution_thread is not None:
+            self.__mulligan_execution_thread.cancel()
+
+        def _mulligan_if_still_mine():
+            try:
+                self.__mulligan_execution_thread = None
+                self.__mulligan_decision_armed = False
+                ti = self.updated_game_state.get_turn_info() or {}
+                if (
+                    ti.get("decisionPlayer") == my_seat
+                    and self.__mulligan_decision_callback
+                ):
+                    runtime_status.clear_intentional_wait()
+                    self.__mulligan_decision_callback([])
+                else:
+                    runtime_status.clear_intentional_wait()
+                    bot_logger.log_info(
+                        f"Skipping delayed mulligan (decisionPlayer={ti.get('decisionPlayer')}, my_seat={my_seat})"
+                    )
+            except Exception as e:
+                self.__mulligan_execution_thread = None
+                self.__mulligan_decision_armed = False
+                runtime_status.clear_intentional_wait()
+                bot_logger.log_error(f"Error in delayed mulligan callback: {e}")
+
+        self.__mulligan_execution_thread = threading.Timer(self.__intro_delay, _mulligan_if_still_mine)
+        self.__mulligan_execution_thread.start()
+        self.__mulligan_decision_armed = True
+        runtime_status.set_intentional_wait(float(self.__intro_delay) + 2.0, "mulligan_wait")
+        bot_logger.log_info("Arming mulligan decision timer.")
+        return True
+
+    def __preempt_stack_select_n_for_combat(self, reason: str) -> bool:
+        pending = self.__pending_select_n or {}
+        if pending.get("mode") != "stack":
+            return False
+        return self.__clear_pending_select_n_state(reason)
+
     def __combat_step_ready_for_recovery(self) -> bool:
         turn_info = self.updated_game_state.get_turn_info() or {}
         my_seat = self.__system_seat_id
@@ -2842,6 +3003,7 @@ class Controller(ControllerSecondary):
         self.__has_mulled_keep = False
         self.__system_seat_id = None
         self.__last_match_won = None
+        self.__last_seen_match_id = None
         self.__attack_target_required = False
         self._suppress_selections = False
         self.updated_game_state = GameState()
@@ -2862,11 +3024,54 @@ class Controller(ControllerSecondary):
         if self.__mulligan_execution_thread is not None:
             self.__mulligan_execution_thread.cancel()
             self.__mulligan_execution_thread = None
+        self.__mulligan_decision_armed = False
         # Cancel inactivity timer
         self.stop_inactivity_timer()
         # Reset all cached log data for fresh start
         self.log_reader.reset_all_patterns()
         bot_logger.log_info("Controller state reset complete")
+
+    def __reset_live_game_state(self, reason: str, *, preserve_system_seat_id: int | None = None) -> None:
+        preserved_seat = preserve_system_seat_id if preserve_system_seat_id is not None else self.__system_seat_id
+        self.__has_mulled_keep = False
+        self.__last_match_won = None
+        self.__attack_target_required = False
+        self._suppress_selections = False
+        self.updated_game_state = GameState()
+        self.__inst_id_grp_id_dict = {}
+        self.__pending_target_select = None
+        self.__last_target_select_source_id = None
+        self.__last_target_select_ts = 0.0
+        self.__last_submit_targets_ts = 0.0
+        self.__pending_select_n = None
+        self.__select_n_in_progress = False
+        self.__select_n_in_progress_since = 0.0
+        self.__select_n_token_counter += 1
+        self.__pending_pay_costs_ts = 0.0
+        self.__clear_combat_recovery(reason)
+        self.__last_attack_submit_ts = 0.0
+        self.__my_timer_state = {}
+        if self.__decision_execution_thread is not None:
+            self.__decision_execution_thread.cancel()
+            self.__decision_execution_thread = None
+        self.__decision_delay_key = None
+        self.__decision_delay_scheduled_at = 0.0
+        if self.__mulligan_execution_thread is not None:
+            self.__mulligan_execution_thread.cancel()
+            self.__mulligan_execution_thread = None
+        self.__mulligan_decision_armed = False
+        self.stop_inactivity_timer()
+        self.__system_seat_id = preserved_seat
+        runtime_status.update_status(
+            turn_info={},
+            local_system_seat_id=preserved_seat,
+            my_timer_running=False,
+            my_timer_type="",
+            my_timer_remaining_sec=None,
+            my_timer_elapsed_sec=None,
+            my_timer_duration_sec=None,
+        )
+        bot_logger.log_info(reason)
 
     def get_inst_id_grp_id_dict(self):
         return self.__inst_id_grp_id_dict
@@ -3008,10 +3213,13 @@ class Controller(ControllerSecondary):
             if self._account_switch_due():
                 self._account_switch_pending = True
         elif pattern == self.patterns["queue_ready_marker"]:
-            runtime_status.set_mode("queue_ready", bot_state=str(current_state))
+            self._set_runtime_home_mode("queue_ready")
             self._handle_queue_ready()
         elif pattern == self.patterns["main_nav_loaded"]:
-            runtime_status.set_mode("home_ready", bot_state=str(current_state))
+            if self._account_switch_in_progress:
+                self._set_runtime_home_mode("account_switch")
+            else:
+                self._set_runtime_home_mode("home_ready")
             self._handle_main_nav_loaded()
         elif pattern == self.patterns["assign_damage"]:
             # Wait a small delay to ensure UI is ready
@@ -3449,6 +3657,24 @@ class Controller(ControllerSecondary):
                     timeout_sec=max(8.0, self._login_delete_delay_sec + 3.0),
                 )
             if not logout_ok:
+                home_ready_after_logout = self._playerlog_contains_marker_since(
+                    ["MainNav load in"],
+                    start_offset=logout_log_offset,
+                )
+                if home_ready_after_logout:
+                    bot_logger.log_error(
+                        "Account switch logout did not reach the login screen; MainNav/Home was detected instead. "
+                        "Aborting account switch and resuming queue on the current account."
+                    )
+                    self._write_nav_debug_bundle("logout_failed_home_visible")
+                    self._account_switch_pending = False
+                    self._last_account_switch_ts = time.time()
+                    self._account_switch_in_progress = False
+                    runtime_status.clear_intentional_wait()
+                    self._set_runtime_home_mode("home_ready")
+                    self.start_queueing()
+                    queued_after_login = True
+                    return
                 bot_logger.log_error("Account switch failed: logout did not reach the login screen.")
                 self._write_nav_debug_bundle("logout_failed_no_login_screen")
                 self._account_switch_pending = False
@@ -3744,13 +3970,14 @@ class Controller(ControllerSecondary):
                     min_sel = 1
                 random.shuffle(ids)
                 def _clear_pending_select_n(reason: str | None = None) -> None:
-                    if reason:
-                        bot_logger.log_info(reason)
-                    self.__pending_select_n = None
-                    self.__select_n_in_progress = False
-                    self.__select_n_in_progress_since = 0.0
-                    bot_logger.log_info("SelectN cleared: decisions may resume.")
-                    self.__clear_target_wait_if_unblocked()
+                    self.__clear_pending_select_n_state(reason or "SelectN cleared.")
+
+                informational_use_only = bool(message.get("informationalUseOnly"))
+                if informational_use_only:
+                    _clear_pending_select_n(
+                        "SelectN informational-only: no action required."
+                    )
+                    continue
 
                 context = req.get("context")
                 option_context = req.get("optionContext")
@@ -3812,6 +4039,22 @@ class Controller(ControllerSecondary):
                     cid for cid in ids if cid in battlefield_zone_ids and cid in my_battlefield_ids
                 ]
                 prompt_ids = [cid for cid in ids if cid in pending_ids or cid in stack_ids]
+                game_objects_by_id = {
+                    int(obj.get("instanceId")): obj
+                    for obj in game_objects
+                    if isinstance(obj, dict) and isinstance(obj.get("instanceId"), int)
+                }
+                stack_selection_targets: list[dict[str, int]] = []
+                for prompt_id in prompt_ids:
+                    hover_id = prompt_id
+                    prompt_obj = game_objects_by_id.get(prompt_id) or {}
+                    if str(prompt_obj.get("type") or "") == "GameObjectType_Ability":
+                        parent_id = prompt_obj.get("parentId")
+                        if isinstance(parent_id, int) and parent_id > 0:
+                            hover_id = parent_id
+                    stack_selection_targets.append(
+                        {"prompt_id": int(prompt_id), "hover_id": int(hover_id)}
+                    )
                 if prompt_ids:
                     use_stack_selection = True
                 elif isinstance(option_context, str) and "stack" in option_context.lower():
@@ -3866,6 +4109,17 @@ class Controller(ControllerSecondary):
                     bot_logger.log_info(
                         f"SelectN using stack/pending selection for ids={ids}"
                     )
+                    if stack_selection_targets and any(
+                        target["prompt_id"] != target["hover_id"] for target in stack_selection_targets
+                    ):
+                        bot_logger.log_info(
+                            "SelectN stack hover remap: {}".format(
+                                [
+                                    f"{target['prompt_id']}->{target['hover_id']}"
+                                    for target in stack_selection_targets
+                                ]
+                            )
+                        )
                 elif use_battlefield_selection and not use_hand_selection:
                     ids = ids_on_my_battlefield
                     bot_logger.log_info(
@@ -3986,6 +4240,11 @@ class Controller(ControllerSecondary):
                                     f"SelectN delay: waiting {wait_sec:.1f} seconds before selection."
                                 )
                                 time.sleep(wait_sec)
+                                if not _select_n_valid():
+                                    bot_logger.log_info(
+                                        "SelectN selection canceled after delay: prompt token no longer valid."
+                                    )
+                                    return
                             try:
                                 turn_info = self.updated_game_state.get_turn_info() or {}
                                 decision_player = turn_info.get("decisionPlayer")
@@ -3997,22 +4256,38 @@ class Controller(ControllerSecondary):
                                 stack_count_local = self.updated_game_state.get_zone_object_count("ZoneType_Stack")
                             except Exception:
                                 stack_count_local = 0
+                            has_concrete_resolution_selection = (
+                                resolution_context
+                                and (use_hand_selection or use_stack_selection or use_battlefield_selection)
+                            )
+                            should_wait_for_stack_resolution = (
+                                resolution_context
+                                and stack_count_local > 0
+                                and not has_concrete_resolution_selection
+                            )
                             if (
                                 self.__system_seat_id is not None
                                 and decision_player is not None
                                 and decision_player != self.__system_seat_id
-                            ) or pending_count > 0 or (resolution_context and stack_count_local > 0):
+                            ) or pending_count > 0 or should_wait_for_stack_resolution:
                                 if attempt < 3:
                                     bot_logger.log_info(
-                                        "SelectN delayed: decisionPlayer={}, pendingMessages={}, retrying (attempt {}).".format(
-                                            decision_player, pending_count, attempt + 1
+                                        "SelectN delayed: decisionPlayer={}, pendingMessages={}, stackCount={}, concreteSelection={}, retrying (attempt {}).".format(
+                                            decision_player,
+                                            pending_count,
+                                            stack_count_local,
+                                            has_concrete_resolution_selection,
+                                            attempt + 1,
                                         )
                                     )
                                     _attempt_selection(attempt + 1, delay=0.8)
                                 else:
                                     bot_logger.log_info(
-                                        "SelectN aborted: decisionPlayer={}, pendingMessages={}.".format(
-                                            decision_player, pending_count
+                                        "SelectN aborted: decisionPlayer={}, pendingMessages={}, stackCount={}, concreteSelection={}.".format(
+                                            decision_player,
+                                            pending_count,
+                                            stack_count_local,
+                                            has_concrete_resolution_selection,
                                         )
                                     )
                                     _clear_pending_select_n()
@@ -4023,16 +4298,27 @@ class Controller(ControllerSecondary):
                             base_clicks = 2 if resolution_context else 1
                             clicks = base_clicks if attempt == 1 else 2
                             ids_to_select = list(ids)
+                            stack_targets_to_select = list(stack_selection_targets)
                             if use_stack_selection and not use_hand_selection:
                                 active_prompt_ids = _current_prompt_ids()
-                                ids_to_select = [cid for cid in ids_to_select if cid in active_prompt_ids]
-                                if not ids_to_select:
+                                stack_targets_to_select = [
+                                    target
+                                    for target in stack_targets_to_select
+                                    if target.get("prompt_id") in active_prompt_ids
+                                ]
+                                ids_to_select = [target.get("prompt_id") for target in stack_targets_to_select]
+                                if not stack_targets_to_select:
                                     bot_logger.log_info(
                                         "SelectN stack/pending prompt no longer active; aborting stale selection."
                                     )
                                     _clear_pending_select_n()
                                     return
-                            for card_id in ids_to_select:
+                            for idx, card_id in enumerate(ids_to_select):
+                                if not _select_n_valid():
+                                    bot_logger.log_info(
+                                        "SelectN selection canceled mid-loop: prompt token no longer valid."
+                                    )
+                                    return
                                 if selected >= min_sel:
                                     break
                                 selected_ok = False
@@ -4051,16 +4337,36 @@ class Controller(ControllerSecondary):
                                             f"SelectN skipping stale prompt id={card_id} before stack click."
                                         )
                                         continue
-                                    selected_ok = self.select_stack_item(card_id, clicks=1)
+                                    hover_id = card_id
+                                    if idx < len(stack_targets_to_select):
+                                        hover_id = int(stack_targets_to_select[idx].get("hover_id") or card_id)
+                                    if hover_id in used_hover_ids:
+                                        bot_logger.log_info(
+                                            f"SelectN skipping duplicate stack hover target id={hover_id} for prompt id={card_id}."
+                                        )
+                                        continue
+                                    selected_ok = self.select_stack_item(hover_id, clicks=1)
+                                    if selected_ok:
+                                        used_hover_ids.add(hover_id)
                                 elif use_battlefield_selection:
                                     selected_ok = self.select_battlefield_permanent(card_id, clicks=1)
                                 if selected_ok:
+                                    if not _select_n_valid():
+                                        bot_logger.log_info(
+                                            "SelectN selection canceled after click: prompt token no longer valid."
+                                        )
+                                        return
                                     selected += 1
                                     selected_ids.append(card_id)
                                     time.sleep(0.3)
                             if not selected_ids:
                                 bot_logger.log_error("SelectN failed to select any cards")
                                 _clear_pending_select_n()
+                                return
+                            if not _select_n_valid():
+                                bot_logger.log_info(
+                                    "SelectN submit canceled: prompt token no longer valid."
+                                )
                                 return
                             time.sleep(0.8)
                             bot_logger.log_info("SelectN submitting selection.")
@@ -4458,6 +4764,41 @@ class Controller(ControllerSecondary):
             pending["selected"] = selected
         self.__pending_target_select = pending
 
+    def __get_effective_decision_delay(self) -> float:
+        delay = max(0.0, float(self.__decision_delay or 0.0))
+        lowest_remaining = None
+        for timer_state in self.__my_timer_state.values():
+            if not timer_state.get("running", False):
+                continue
+            if str(timer_state.get("type") or "") != "TimerType_Inactivity":
+                continue
+            remaining = timer_state.get("remaining_sec")
+            if remaining is None:
+                continue
+            try:
+                remaining_value = float(remaining)
+            except Exception:
+                continue
+            if lowest_remaining is None or remaining_value < lowest_remaining:
+                lowest_remaining = remaining_value
+        if lowest_remaining is None:
+            return delay
+        if lowest_remaining <= 6.0:
+            bot_logger.log_info(
+                f"Decision delay bypassed: inactivity rope remaining={lowest_remaining:.1f}s"
+            )
+            return 0.0
+        safe_delay = max(0.0, lowest_remaining - 2.5)
+        if safe_delay < delay:
+            bot_logger.log_info(
+                "Decision delay clamped: requested={}s effective={:.1f}s inactivity_remaining={:.1f}s".format(
+                    delay,
+                    safe_delay,
+                    lowest_remaining,
+                )
+            )
+        return min(delay, safe_delay)
+
     def __pending_target_ready_to_submit(self) -> bool:
         pending = self.__pending_target_select or {}
         selected = pending.get("selected")
@@ -4565,6 +4906,7 @@ class Controller(ControllerSecondary):
 
     def __is_selecting_targets(self) -> bool:
         try:
+            has_local_target_annotation = False
             annotations = self.updated_game_state.get_annotations()
             for annotation in annotations:
                 types = annotation.get("type", []) or []
@@ -4572,12 +4914,28 @@ class Controller(ControllerSecondary):
                     continue
                 affector_id = annotation.get("affectorId")
                 if self.__system_seat_id is None or affector_id is None:
-                    return True
+                    has_local_target_annotation = True
+                    break
                 if affector_id == self.__system_seat_id:
-                    return True
+                    has_local_target_annotation = True
+                    break
+            if not has_local_target_annotation:
+                return False
+            pending_message_count = self.updated_game_state.get_pending_message_count()
+            last_signal_ts = max(
+                float(self.__last_target_select_ts or 0.0),
+                float((self.__pending_target_select or {}).get("ts", 0.0) or 0.0),
+            )
+            if pending_message_count <= 0 and last_signal_ts > 0.0:
+                signal_age = time.time() - last_signal_ts
+                if signal_age > 8.0:
+                    self.__clear_pending_target_select_state(
+                        "Target selection auto-clear: stale PlayerSelectingTargets annotation."
+                    )
+                    return False
+            return True
         except Exception:
             return False
-        return False
 
     def __clear_target_wait_if_unblocked(self) -> None:
         if self.__pending_target_select is not None:
@@ -4585,6 +4943,56 @@ class Controller(ControllerSecondary):
         if self.__is_selecting_targets():
             return
         runtime_status.clear_intentional_wait()
+
+    def __clear_stale_target_wait_if_safe_pass_window(self) -> bool:
+        if not self.__is_safe_stack_pass_window():
+            return False
+        had_pending = self.__pending_target_select is not None
+        selecting = self.__is_selecting_targets()
+        if not had_pending and not selecting:
+            return False
+        if had_pending:
+            self.__pending_target_select = None
+        runtime_status.clear_intentional_wait()
+        bot_logger.log_info(
+            "Target selection auto-clear: safe own pass window with pendingMessageCount=0."
+        )
+        return True
+
+    def __get_action_type(self, action: dict | None) -> str | None:
+        if not isinstance(action, dict):
+            return None
+        action_type = action.get("actionType")
+        if isinstance(action_type, str):
+            return action_type
+        nested_action = action.get("action")
+        if isinstance(nested_action, dict):
+            nested_action_type = nested_action.get("actionType")
+            if isinstance(nested_action_type, str):
+                return nested_action_type
+        return None
+
+    def __has_available_action_type(self, action_type: str) -> bool:
+        return any(
+            self.__get_action_type(action) == action_type
+            for action in (self.updated_game_state.get_actions() or [])
+        )
+
+    def __is_safe_stack_pass_window(self) -> bool:
+        turn_info = self.updated_game_state.get_turn_info() or {}
+        if not turn_info:
+            return False
+        if turn_info.get("phase") not in ("Phase_Main1", "Phase_Main2"):
+            return False
+        my_seat = self.__system_seat_id or turn_info.get("decisionPlayer")
+        if my_seat is None or turn_info.get("decisionPlayer") != my_seat:
+            return False
+        if self.updated_game_state.get_pending_message_count() != 0:
+            return False
+        stack_zone = self.updated_game_state.get_zone("ZoneType_Stack")
+        if not stack_zone or not (stack_zone.get("objectInstanceIds", []) or []):
+            return False
+        return self.__has_available_action_type("ActionType_Pass")
 
     def __should_pause_for_select_n(self) -> bool:
         if self._suppress_selections:
@@ -4608,22 +5016,24 @@ class Controller(ControllerSecondary):
             mode = pending.get("mode")
             ids = set(pending.get("ids", []) or [])
             in_progress_age = time.time() - float(self.__select_n_in_progress_since or 0.0)
+            if mode == "stack" and self.__combat_recovery_key is not None:
+                if self.__preempt_stack_select_n_for_combat(
+                    "SelectN auto-clear: combat attackers prompt superseded stack selection."
+                ):
+                    return False
+            if mode == "stack" and self.__is_safe_stack_pass_window():
+                self.__clear_pending_select_n_state(
+                    "SelectN auto-clear: safe pass window superseded stale stack selection."
+                )
+                return False
             # Fail-safe for stack/pending prompts: if ids vanished, unblock decisions.
             if mode == "stack" and ids and not ids.intersection(active_prompt_ids):
                 if (time.time() - self.__last_submit_selection_ts) > 0.8:
-                    self.__pending_select_n = None
-                    self.__select_n_in_progress = False
-                    self.__select_n_in_progress_since = 0.0
-                    bot_logger.log_info("SelectN auto-clear: stack prompt resolved.")
-                    self.__clear_target_wait_if_unblocked()
+                    self.__clear_pending_select_n_state("SelectN auto-clear: stack prompt resolved.")
                     return False
             # Hard timeout guard to avoid infinite selection stalls.
             if in_progress_age > 20.0:
-                self.__pending_select_n = None
-                self.__select_n_in_progress = False
-                self.__select_n_in_progress_since = 0.0
-                bot_logger.log_info("SelectN auto-clear: in-progress timeout.")
-                self.__clear_target_wait_if_unblocked()
+                self.__clear_pending_select_n_state("SelectN auto-clear: in-progress timeout.")
                 return False
             bot_logger.log_info("SelectN in progress: pausing other decisions.")
             return True
@@ -4631,24 +5041,30 @@ class Controller(ControllerSecondary):
             return False
         ts = self.__pending_select_n.get("ts", 0.0)
         ids = set(self.__pending_select_n.get("ids", []) or [])
+        if self.__pending_select_n.get("mode") == "stack" and self.__is_safe_stack_pass_window():
+            self.__clear_pending_select_n_state(
+                "SelectN auto-clear: safe pass window superseded stale stack selection."
+            )
+            return False
         if pending_ids and ids.intersection(pending_ids):
             return True
         if time.time() - ts < 3.0:
             return True
-        self.__pending_select_n = None
-        self.__select_n_in_progress = False
-        self.__select_n_in_progress_since = 0.0
-        bot_logger.log_info("SelectN auto-clear: pending window elapsed.")
-        self.__clear_target_wait_if_unblocked()
+        self.__clear_pending_select_n_state("SelectN auto-clear: pending window elapsed.")
         return False
 
     def __should_pause_for_targets(self) -> bool:
         if self.__should_pause_for_select_n():
             return True
+        if self.__clear_stale_target_wait_if_safe_pass_window():
+            return False
         if self.__pending_target_select is not None:
             if self.__last_submit_targets_ts and time.time() - self.__last_submit_targets_ts < self.__target_submit_cooldown_sec:
                 return True
-            return self.__is_selecting_targets()
+            if self.__is_selecting_targets():
+                return True
+            self.__clear_pending_target_select_state("Target selection auto-clear: prompt no longer active.")
+            return False
         return self.__is_selecting_targets()
 
     def __should_pause_for_pay_costs(self) -> bool:
@@ -4714,8 +5130,7 @@ class Controller(ControllerSecondary):
                 result = resp.get("result")
                 if result == "ResultCode_Success":
                     self.__last_submit_targets_ts = time.time()
-                    self.__pending_target_select = None
-                    bot_logger.log_info("SubmitTargetsResp: success")
+                    self.__clear_pending_target_select_state("SubmitTargetsResp: success")
         except Exception as e:
             bot_logger.log_error(f"Failed to handle target selection from game state: {e}")
 
@@ -4762,6 +5177,9 @@ class Controller(ControllerSecondary):
                         recovery_key,
                         req.get("canSubmitAttackers"),
                     )
+                )
+                self.__preempt_stack_select_n_for_combat(
+                    "DeclareAttackersReq: preempted stale stack SelectN prompt."
                 )
                 self.__arm_combat_recovery(recovery_key, delay=1.0)
                 return
@@ -4895,6 +5313,105 @@ class Controller(ControllerSecondary):
             bot_logger.log_error(f"Failed to infer timeout loss from game state: {e}")
         return False
 
+    def __infer_keep_from_raw_dict(self, raw_dict: dict) -> bool:
+        try:
+            messages = raw_dict.get("greToClientEvent", {}).get("greToClientMessages", [])
+            for message in messages:
+                if message.get("type") != "GREMessageType_EdictalMessage":
+                    continue
+                edict_message = (message.get("edictalMessage", {}) or {}).get("edictMessage", {}) or {}
+                if edict_message.get("type") != "ClientMessageType_MulliganResp":
+                    continue
+                seat_id = edict_message.get("systemSeatId")
+                if self.__system_seat_id is not None and seat_id is not None and seat_id != self.__system_seat_id:
+                    continue
+                decision = ((edict_message.get("mulliganResp", {}) or {}).get("decision") or "")
+                if decision == "MulliganOption_AcceptHand":
+                    return True
+        except Exception as e:
+            bot_logger.log_error(f"Failed to infer mulligan keep from raw dict: {e}")
+        return False
+
+    def __extract_match_id_from_raw_dict(self, raw_dict: dict) -> str | None:
+        try:
+            messages = raw_dict.get("greToClientEvent", {}).get("greToClientMessages", [])
+            for message in messages:
+                if message.get("type") != "GREMessageType_GameStateMessage":
+                    continue
+                game_info = (message.get("gameStateMessage", {}) or {}).get("gameInfo", {}) or {}
+                match_id = str(game_info.get("matchID") or "").strip()
+                if match_id:
+                    return match_id
+        except Exception as e:
+            bot_logger.log_error(f"Failed to extract matchID from raw dict: {e}")
+        return None
+
+    def __should_reset_for_fresh_game_baseline(self, raw_dict: dict) -> bool:
+        try:
+            current_state = self.updated_game_state.get_full_state() or {}
+            current_turn_info = self.updated_game_state.get_turn_info() or {}
+            current_game_state_id = int(current_state.get("gameStateId") or 0)
+            has_live_turn_context = any(
+                current_turn_info.get(key) is not None
+                for key in ("turnNumber", "phase", "step", "activePlayer", "priorityPlayer", "decisionPlayer")
+            )
+            if not has_live_turn_context and current_game_state_id <= 0:
+                return False
+
+            has_local_mulligan_req = self.__has_local_mulligan_request(raw_dict)
+            messages = raw_dict.get("greToClientEvent", {}).get("greToClientMessages", [])
+            for message in messages:
+                if message.get("type") != "GREMessageType_GameStateMessage":
+                    continue
+                game_state_msg = message.get("gameStateMessage", {}) or {}
+                incoming_game_state_id = int(game_state_msg.get("gameStateId") or 0)
+                prev_game_state_id = int(game_state_msg.get("prevGameStateId") or 0)
+                game_info = game_state_msg.get("gameInfo", {}) or {}
+                stage = str(game_info.get("stage") or "")
+                has_mulligan_pending = any(
+                    str((player or {}).get("pendingMessageType") or "").startswith("ClientMessageType_Mulligan")
+                    for player in (game_state_msg.get("players", []) or [])
+                )
+                has_sparse_turn_info = isinstance(game_state_msg.get("turnInfo"), dict) and not any(
+                    game_state_msg.get("turnInfo", {}).get(key)
+                    for key in ("turnNumber", "phase", "step")
+                )
+                game_state_regressed = incoming_game_state_id > 0 and current_game_state_id > 0 and incoming_game_state_id < current_game_state_id
+                looks_like_fresh_baseline = (
+                    stage == "GameStage_Start"
+                    or (incoming_game_state_id > 0 and incoming_game_state_id <= 2 and prev_game_state_id <= 1)
+                    or game_state_regressed
+                )
+                if looks_like_fresh_baseline and (has_local_mulligan_req or has_mulligan_pending or has_sparse_turn_info):
+                    return True
+        except Exception as e:
+            bot_logger.log_error(f"Failed to detect fresh game baseline reset: {e}")
+        return False
+
+    def __infer_keep_from_live_game_state(self) -> bool:
+        try:
+            turn_info = self.updated_game_state.get_turn_info() or {}
+            actions = self.updated_game_state.get_actions() or []
+            if not turn_info:
+                return False
+            turn_number = turn_info.get("turnNumber")
+            active_player = turn_info.get("activePlayer")
+            priority_player = turn_info.get("priorityPlayer")
+            decision_player = turn_info.get("decisionPlayer")
+            phase = turn_info.get("phase")
+            step = turn_info.get("step")
+            has_live_priority = any(v is not None for v in (active_player, priority_player, decision_player))
+            has_turn_progress = turn_number is not None and (bool(phase) or bool(step))
+            has_playable_actions = any(
+                self.__get_action_type(action) in {"ActionType_Play", "ActionType_Cast", "ActionType_Pass"}
+                for action in actions
+            )
+            has_playable_state = has_playable_actions or bool(phase) or bool(step)
+            return bool(has_live_priority and has_turn_progress and has_playable_state)
+        except Exception as e:
+            bot_logger.log_error(f"Failed to infer keep from live game state: {e}")
+            return False
+
     def __update_inst_id__grp_id_dict(self, object_dict_arr):
         for object_dict in object_dict_arr:
             if object_dict['instanceId'] not in self.__inst_id_grp_id_dict.keys():
@@ -4907,6 +5424,26 @@ class Controller(ControllerSecondary):
             self.__system_seat_id = system_seat_id
             self.__my_timer_state = {}
             bot_logger.log_info(f"Detected local systemSeatId={self.__system_seat_id}")
+        if self.__system_seat_id is not None:
+            runtime_status.update_status(local_system_seat_id=self.__system_seat_id)
+
+        incoming_match_id = self.__extract_match_id_from_raw_dict(raw_dict)
+        if (
+            incoming_match_id
+            and self.__last_seen_match_id
+            and incoming_match_id != self.__last_seen_match_id
+        ):
+            self.__reset_live_game_state(
+                f"Fresh match detected: {self.__last_seen_match_id} -> {incoming_match_id}. Resetting stale local game state.",
+                preserve_system_seat_id=self.__system_seat_id,
+            )
+        elif self.__should_reset_for_fresh_game_baseline(raw_dict):
+            self.__reset_live_game_state(
+                "Fresh game baseline detected from early gameState/mulligan signals. Resetting stale local game state.",
+                preserve_system_seat_id=self.__system_seat_id,
+            )
+        if incoming_match_id:
+            self.__last_seen_match_id = incoming_match_id
 
         outcome = self.__infer_match_won_from_raw_dict(raw_dict)
         if outcome is not None:
@@ -4920,6 +5457,13 @@ class Controller(ControllerSecondary):
 
         game_state = Controller.__get_game_state_from_raw_dict(raw_dict, fallback_seat_id=self.__system_seat_id or 1)
         self.updated_game_state.update(game_state)
+        keep_observed = self.__infer_keep_from_raw_dict(raw_dict)
+        if self.__has_local_mulligan_request(raw_dict) and not keep_observed:
+            self.__clear_premature_mulligan_keep("Local MulliganReq observed: clearing premature keep state.")
+        if keep_observed:
+            self.__mark_has_mulled_keep("Mulligan keep observed from ClientMessageType_MulliganResp.")
+        elif not self.__has_mulled_keep and not self.__has_pending_mulligan_state(raw_dict) and self.__infer_keep_from_live_game_state():
+            self.__mark_has_mulled_keep("Mulligan keep inferred from live gameplay state.")
         print(self.updated_game_state)
 
         # Log all parsed game state data to bot.log
@@ -4958,11 +5502,13 @@ class Controller(ControllerSecondary):
             f"decisionPlayer={turn_info_dict.get('decisionPlayer') if turn_info_dict else None}, has_mulled_keep={self.__has_mulled_keep}"
         )
 
+        if self.__arm_mulligan_if_needed(turn_info_dict, raw_dict):
+            return
+
         if stack_count > 0 and turn_info_dict and turn_info_dict.get("phase") in ("Phase_Main1", "Phase_Main2"):
             my_seat = self.__system_seat_id or turn_info_dict.get("decisionPlayer")
             if my_seat is not None and turn_info_dict.get("decisionPlayer") == my_seat and pending_count == 0:
-                actions = self.updated_game_state.get_actions() or []
-                has_pass = any(action.get("actionType") == "ActionType_Pass" for action in actions)
+                has_pass = self.__has_available_action_type("ActionType_Pass")
                 if has_pass:
                     bot_logger.log_info(
                         "Stack present but safe to resolve: decisionPlayer=me, pendingMessageCount=0, pass available."
@@ -5060,18 +5606,41 @@ class Controller(ControllerSecondary):
                     int(turn_info_dict.get("activePlayer", -1) or -1),
                     int(turn_info_dict.get("decisionPlayer", -1) or -1),
                 )
+                effective_delay = self.__get_effective_decision_delay()
                 existing_alive = (
                     self.__decision_execution_thread is not None
                     and getattr(self.__decision_execution_thread, "is_alive", lambda: False)()
                 )
                 if existing_alive and self.__decision_delay_key == delay_key:
-                    bot_logger.log_info(
-                        "Decision delay already armed for current priority window; keeping existing timer."
-                    )
-                    return
+                    if effective_delay <= 0.05:
+                        bot_logger.log_info(
+                            "Decision delay override: canceling existing timer because inactivity rope is low."
+                        )
+                        self.__decision_execution_thread.cancel()
+                        self.__decision_execution_thread = None
+                        self.__decision_delay_key = None
+                        self.__decision_delay_scheduled_at = 0.0
+                    else:
+                        elapsed = max(
+                            0.0,
+                            time.time() - float(self.__decision_delay_scheduled_at or 0.0),
+                        )
+                        remaining_delay = max(0.2, float(effective_delay) - elapsed)
+                        runtime_status.set_intentional_wait(
+                            max(2.0, remaining_delay + 2.5),
+                            "decision_delay_wait",
+                        )
+                        bot_logger.log_info(
+                            "Decision delay already armed for current priority window; keeping existing timer (remaining={:.1f}s).".format(
+                                remaining_delay
+                            )
+                        )
+                        return
                 if self.__decision_execution_thread is not None:
                     self.__decision_execution_thread.cancel()
                     self.__decision_execution_thread = None
+                    self.__decision_delay_key = None
+                    self.__decision_delay_scheduled_at = 0.0
 
                 def _decision_if_still_my_priority():
                     try:
@@ -5107,49 +5676,36 @@ class Controller(ControllerSecondary):
                         runtime_status.clear_intentional_wait()
                         bot_logger.log_error(f"Error in delayed decision callback: {e}")
 
+                if effective_delay <= 0.05:
+                    runtime_status.clear_intentional_wait()
+                    bot_logger.log_info(
+                        "Executing decision immediately: turn={} phase={} step={} reason=low_inactivity_timer".format(
+                            delay_key[0],
+                            delay_key[1],
+                            delay_key[2],
+                        )
+                    )
+                    _decision_if_still_my_priority()
+                    return
+
                 runtime_status.set_intentional_wait(
-                    max(2.0, float(self.__decision_delay) + 2.5),
+                    max(2.0, float(effective_delay) + 2.5),
                     "decision_delay_wait",
                 )
                 self.__decision_delay_key = delay_key
                 self.__decision_delay_scheduled_at = time.time()
                 bot_logger.log_info(
-                    "Arming delayed decision: turn={} phase={} step={} delay={}s".format(
+                    "Arming delayed decision: turn={} phase={} step={} delay={}s effective_delay={:.1f}s".format(
                         delay_key[0],
                         delay_key[1],
                         delay_key[2],
                         self.__decision_delay,
+                        effective_delay,
                     )
                 )
-                self.__decision_execution_thread = threading.Timer(self.__decision_delay, _decision_if_still_my_priority)
+                self.__decision_execution_thread = threading.Timer(effective_delay, _decision_if_still_my_priority)
                 self.__decision_execution_thread.start()
-
-        # Start mulligan timer if we haven't made a mulligan decision yet
-        # This needs to trigger regardless of is_complete to handle game restarts
-        my_seat = self.__system_seat_id
-        if my_seat is not None and not self.__has_mulled_keep and turn_info_dict and turn_info_dict.get('decisionPlayer') == my_seat:
-            if self.__mulligan_execution_thread is not None:
-                self.__mulligan_execution_thread.cancel()
-
-            def _mulligan_if_still_mine():
-                try:
-                    ti = self.updated_game_state.get_turn_info() or {}
-                    if ti.get('decisionPlayer') == my_seat and self.__mulligan_decision_callback:
-                        self.__mulligan_decision_callback([])
-                    else:
-                        bot_logger.log_info(
-                            f"Skipping delayed mulligan (decisionPlayer={ti.get('decisionPlayer')}, my_seat={my_seat})"
-                        )
-                        # Allow rescheduling if needed
-                        self.__has_mulled_keep = False
-                except Exception as e:
-                    bot_logger.log_error(f"Error in delayed mulligan callback: {e}")
-                    self.__has_mulled_keep = False
-
-            self.__mulligan_execution_thread = threading.Timer(self.__intro_delay, _mulligan_if_still_mine)
-            self.__mulligan_execution_thread.start()
-            self.__has_mulled_keep = True
-            print('making mull decision')
+                return
 
     @staticmethod
     def __get_system_seat_id_from_raw_dict(raw_dict: [str, str or int]):

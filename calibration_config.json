@@ -24,8 +24,8 @@
             "y": 1141
         },
         "concede": {
-            "x": 1714,
-            "y": 814
+            "x": 1903,
+            "y": 1252
         },
         "attack_all": {
             "x": 2519,
@@ -67,13 +67,13 @@
         }
     },
     "input_backend": "auto",
-    "account_switch_minutes": 1,
+    "account_switch_minutes": 5,
     "credentials_path": "C:/Users/giaco/source/repos/MTG_AI_Bot-master/MTG_AI_Bot-master/credentials.txt",
-    "account_cycle_index": 0,
+    "account_cycle_index": 1,
     "account_play_order": [
         "Ayaylll",
-        "Affinity2004",
-        "TEUBAT"
+        "TEUBAT",
+        "Affinity2004"
     ],
     "managed_accounts": [],
     "ui_windows_topmost": true,

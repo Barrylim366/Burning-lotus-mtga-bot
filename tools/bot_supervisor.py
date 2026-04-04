@@ -18,6 +18,7 @@ from Controller.Utilities.input_controller import create_input_controller
 from bot_logger import ensure_debug_dir
 from runtime_status import get_status_path, read_status
 from state.state_machine import BotState, get_state_from_playerlog
+from tools.incident_tracking import ensure_tracking_file
 from vision.vision import VisionEngine
 from vision.window_locator import ArenaRegionProvider, focus_mtga_window
 
@@ -125,6 +126,11 @@ def main() -> int:
                 if trigger_reason is None and should_skip_due_to_wait(status):
                     time.sleep(max(0.5, args.poll_sec))
                     continue
+                if trigger_reason is None:
+                    mode = str(status.get("mode") or "")
+                    if mode not in {"in_game", "stuck_suspected"}:
+                        time.sleep(max(0.5, args.poll_sec))
+                        continue
                 stale_for = compute_stale_seconds(status)
                 if trigger_reason is None and stale_for < float(args.stuck_seconds):
                     time.sleep(max(0.5, args.poll_sec))
@@ -285,6 +291,27 @@ def compute_stale_seconds(status: dict) -> float:
     return max(0.0, time.time() - latest)
 
 
+def has_local_priority(status: dict) -> bool:
+    turn_info = status.get("turn_info")
+    if not isinstance(turn_info, dict) or not turn_info:
+        return False
+    try:
+        local_seat = int(status.get("local_system_seat_id") or 0)
+    except Exception:
+        local_seat = 0
+    if local_seat <= 0:
+        return False
+    try:
+        decision_player = int(turn_info.get("decisionPlayer") or 0)
+    except Exception:
+        decision_player = 0
+    try:
+        priority_player = int(turn_info.get("priorityPlayer") or 0)
+    except Exception:
+        priority_player = 0
+    return decision_player == local_seat or priority_player == local_seat
+
+
 def detect_stuck_reason(status: dict, args: argparse.Namespace) -> str | None:
     bot_state = str(status.get("bot_state") or "")
     mode = str(status.get("mode") or "")
@@ -332,6 +359,8 @@ def detect_stuck_reason(status: dict, args: argparse.Namespace) -> str | None:
         action_idle = max(0.0, time.time() - action_latest) if action_latest > 0.0 else 0.0
         if wait_active and timer_remaining > 8.0:
             return None
+        if not has_local_priority(status):
+            return None
         if timer_elapsed >= stall_threshold and action_idle >= stall_threshold:
             return "own_inactivity_timer_stalled"
     return None
@@ -373,6 +402,14 @@ def write_incident_bundle(
     write_text(incident_dir / "bot_tail.txt", read_tail(resolve_bot_log_path(), max_bytes=160000))
     write_text(incident_dir / "player_tail.txt", read_tail(playerlog_path, max_bytes=160000))
     write_text(incident_dir / "status_path.txt", get_status_path())
+    try:
+        ensure_tracking_file(
+            incident_dir,
+            created_at=stamp,
+            trigger=reason,
+        )
+    except Exception:
+        pass
 
     try:
         vision.begin_tick()

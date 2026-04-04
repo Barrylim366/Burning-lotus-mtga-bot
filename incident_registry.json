@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "signatures": {
+    "own_combat_select_n_worker_survived_preemption": {
+      "confidence": 0.3,
+      "current_status": "applied",
+      "evidence": [
+        {
+          "at": "2026-04-04T08:41:44Z",
+          "text": "Patch merged after incident timeline showed delayed SelectN worker surviving combat preemption"
+        }
+      ],
+      "first_seen_at": "20260404-103917",
+      "first_seen_incident": "incident-20260404-103917",
+      "last_updated_at": "2026-04-04T08:41:44Z",
+      "latest_incident": "incident-20260404-103917",
+      "regression_count": 0,
+      "reproduced_and_passed_count": 0,
+      "runs_since_applied": 0,
+      "signature": "own_combat_select_n_worker_survived_preemption",
+      "times_seen": 1
+    },
+    "own_main_phase_active_turn_delay_untracked": {
+      "confidence": 0.3,
+      "current_status": "applied",
+      "evidence": [
+        {
+          "at": "2026-04-04T08:57:12Z",
+          "text": "Patch merged after incident showed AI-side active turn delay sleeping with empty intentional_wait_reason"
+        }
+      ],
+      "first_seen_at": "20260404-105529",
+      "first_seen_incident": "incident-20260404-105529",
+      "last_updated_at": "2026-04-04T08:57:12Z",
+      "latest_incident": "incident-20260404-105529",
+      "regression_count": 0,
+      "reproduced_and_passed_count": 0,
+      "runs_since_applied": 0,
+      "signature": "own_main_phase_active_turn_delay_untracked",
+      "times_seen": 1
+    },
+    "own_mulligan_wait_callback_false_negative": {
+      "confidence": 0.3,
+      "current_status": "applied",
+      "evidence": [
+        {
+          "at": "2026-04-04T13:12:49Z",
+          "text": "Latest bundle shows arming mulligan timer followed by delayed callback skipping the real local mulligan response"
+        }
+      ],
+      "first_seen_at": "20260404-151051",
+      "first_seen_incident": "incident-20260404-151051",
+      "last_updated_at": "2026-04-04T13:12:49Z",
+      "latest_incident": "incident-20260404-151051",
+      "regression_count": 0,
+      "reproduced_and_passed_count": 0,
+      "runs_since_applied": 0,
+      "signature": "own_mulligan_wait_callback_false_negative",
+      "times_seen": 1
+    }
+  }
+}

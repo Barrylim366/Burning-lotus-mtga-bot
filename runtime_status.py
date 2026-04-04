@@ -46,6 +46,7 @@ def reset_status(*, log_path: str | None = None) -> dict[str, Any]:
         "last_input_target": None,
         "last_move_name": "",
         "turn_info": {},
+        "local_system_seat_id": None,
         "last_recovery_reason": "",
         "my_timer_running": False,
         "my_timer_type": "",

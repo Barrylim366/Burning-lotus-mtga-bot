@@ -30,10 +30,14 @@ Whenever the agent learns something relevant during a session (e.g., root cause,
 Whenever a real supervisor incident occurs, the agent must append a short entry to `incidents.md` describing:
 
 - timestamp / incident folder
+- incident signature / cluster key for matching future repeats
 - trigger reason
 - whether supervisor recovery / Codex notify succeeded
 - the concrete gameplay/control-flow root cause
 - the fix that was applied (or the next targeted debug artifact if still unresolved)
+- tracking status: `proposed`, `applied`, `survived_n_runs`, `reproduced_and_passed`, or `regressed`
+- confidence score, starting as evidence rather than truth
+- evidence summary, for example surviving runs, replay-like reproductions, or repeated failure of the same signature
 
 ## Supervisor Debug Workflow
 
@@ -44,5 +48,8 @@ If the user asks to run the "supervisor workflow", the Codex agent should:
 3. Treat the supervisor behavior itself as correct unless there is direct evidence that recovery/notification failed; the default response after `stuck` is to debug and fix the bot logic that got stuck.
 4. Inspect the newest incident bundle, compare `bot.log` and `Player.log`, and identify the concrete root cause in gameplay/control flow.
 5. If the same failure repeats or the available evidence is insufficient, add targeted debug artifacts in code at the failing step (for example extra screenshots, state dumps, click-context bundles, or post-action verification images) before rerunning.
-6. Record the analyzed incident in `incidents.md` before rerunning.
-7. After applying bot-logic fixes, restart the supervisor workflow again only when the previous incident has been analyzed.
+6. Record the analyzed incident in `incidents.md` before rerunning, using the tracking block instead of claiming a binary "fixed" state too early.
+7. New diagnoses should start at `proposed` or `applied` with low confidence unless there is direct replay-style evidence.
+8. If the same signature appears again later, update the earlier tracking state to `regressed` and lower confidence; if the bot survives repeated comparable runs, upgrade to `survived_n_runs` or `reproduced_and_passed` with stronger evidence.
+9. After applying bot-logic fixes, restart the supervisor workflow again once the previous incident has been analyzed.
+10. The supervisor workflow is not complete until that post-fix rerun has been started; after incident analysis, tracking updates, and bot-logic changes, the agent must always launch the supervisor workflow again as the final step unless the user explicitly tells it not to rerun.
