@@ -103,5 +103,102 @@ class GameState(GameStateSecondary):
             else:
                 dict_to_update[key] = dict_with_update[key]
 
+    @staticmethod
+    def __merge_list_by_key(
+        existing_items: List[Dict],
+        updated_items: List[Dict],
+        *,
+        key_name: str,
+        deleted_ids: List[int] | None = None,
+    ) -> List[Dict]:
+        merged: Dict[int, Dict] = {}
+        order: List[int] = []
+
+        def _add_item(item: Dict) -> None:
+            if not isinstance(item, dict):
+                return
+            item_key = item.get(key_name)
+            if item_key is None:
+                return
+            if item_key not in merged:
+                merged[item_key] = dict(item)
+                order.append(item_key)
+            else:
+                existing = merged[item_key]
+                if isinstance(existing, dict):
+                    for field, value in item.items():
+                        existing[field] = value
+                else:
+                    merged[item_key] = dict(item)
+
+        for item in existing_items or []:
+            _add_item(item)
+        for item in updated_items or []:
+            _add_item(item)
+
+        for deleted_id in deleted_ids or []:
+            if deleted_id in merged:
+                merged.pop(deleted_id, None)
+            order = [item_key for item_key in order if item_key != deleted_id]
+
+        return [merged[item_key] for item_key in order if item_key in merged]
+
     def update(self, updated_state: 'GameStateSecondary') -> None:
-        self.__update_dict(self.game_dict, updated_state.get_full_state())
+        updated_full_state = updated_state.get_full_state()
+        if updated_full_state.get("type") == "GameStateType_Full":
+            # A full snapshot starts a fresh baseline for the current match/game state.
+            self.game_dict = dict(updated_full_state)
+            return
+        previous_lists = {
+            "zones": list(self.game_dict.get("zones", []) or []),
+            "gameObjects": list(self.game_dict.get("gameObjects", []) or []),
+            "players": list(self.game_dict.get("players", []) or []),
+            "timers": list(self.game_dict.get("timers", []) or []),
+            "annotations": list(self.game_dict.get("annotations", []) or []),
+            "persistentAnnotations": list(self.game_dict.get("persistentAnnotations", []) or []),
+        }
+        self.__update_dict(self.game_dict, updated_full_state)
+
+        deleted_instance_ids = updated_full_state.get("diffDeletedInstanceIds", []) or []
+        deleted_annotation_ids = updated_full_state.get("diffDeletedAnnotationIds", []) or []
+        deleted_persistent_annotation_ids = updated_full_state.get("diffDeletedPersistentAnnotationIds", []) or []
+
+        if "zones" in updated_full_state:
+            self.game_dict["zones"] = self.__merge_list_by_key(
+                previous_lists["zones"],
+                updated_full_state.get("zones", []) or [],
+                key_name="zoneId",
+            )
+        if "gameObjects" in updated_full_state or deleted_instance_ids:
+            self.game_dict["gameObjects"] = self.__merge_list_by_key(
+                previous_lists["gameObjects"],
+                updated_full_state.get("gameObjects", []) or [],
+                key_name="instanceId",
+                deleted_ids=deleted_instance_ids,
+            )
+        if "players" in updated_full_state:
+            self.game_dict["players"] = self.__merge_list_by_key(
+                previous_lists["players"],
+                updated_full_state.get("players", []) or [],
+                key_name="systemSeatNumber",
+            )
+        if "timers" in updated_full_state:
+            self.game_dict["timers"] = self.__merge_list_by_key(
+                previous_lists["timers"],
+                updated_full_state.get("timers", []) or [],
+                key_name="timerId",
+            )
+        if "annotations" in updated_full_state or deleted_annotation_ids:
+            self.game_dict["annotations"] = self.__merge_list_by_key(
+                previous_lists["annotations"],
+                updated_full_state.get("annotations", []) or [],
+                key_name="id",
+                deleted_ids=deleted_annotation_ids,
+            )
+        if "persistentAnnotations" in updated_full_state or deleted_persistent_annotation_ids:
+            self.game_dict["persistentAnnotations"] = self.__merge_list_by_key(
+                previous_lists["persistentAnnotations"],
+                updated_full_state.get("persistentAnnotations", []) or [],
+                key_name="id",
+                deleted_ids=deleted_persistent_annotation_ids,
+            )

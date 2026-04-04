@@ -323,6 +323,7 @@ class Game:
             if not self._infer_game_started_from_live_state(current_game_state):
                 self._debug("decision_method called but game not started yet, ignoring")
                 return
+        delay_wait_active = False
 
         # Reset inactivity timer since we're making a decision
         if hasattr(self.controller, 'reset_inactivity_timer'):
@@ -361,7 +362,12 @@ class Game:
 
             if active_player == decision_player and turn_num != self._last_action_delay_turn:
                 self._debug("Active turn delay: waiting 2 seconds before actions")
-                time.sleep(2.0)
+                runtime_status.set_intentional_wait(2.2, "active_turn_delay")
+                delay_wait_active = True
+                try:
+                    time.sleep(2.0)
+                except Exception:
+                    pass
                 self._last_action_delay_turn = turn_num
 
             # Log new turn in human log (only once per turn, only for MY turns)
@@ -495,3 +501,6 @@ class Game:
             self._debug(f"CRITICAL ERROR in decision_method: {e}")
             self._debug(traceback.format_exc())
             self._human_log(f"  [ERROR] Bot encountered an error: {e}")
+        finally:
+            if delay_wait_active:
+                runtime_status.clear_intentional_wait()

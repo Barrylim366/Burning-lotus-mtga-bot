@@ -525,6 +525,7 @@ Default behavior:
 - Ignores stale `runtime/status.json` for a short startup grace window and waits until the status belongs to the newly spawned child PID before it starts classifying incidents
 - Watches `runtime/status.json` for real activity instead of only file mtimes
 - Treats the bot as stuck after 300 seconds without `Player.log`, decision, or input activity unless `intentional_wait_until_epoch` says the bot is in a known wait window
+- That generic stale-timeout fallback now only applies while the child reports a real in-game mode (`in_game` / `stuck_suspected`); if the bot is already on `HOME`, `home_ready`, `queue_ready`, or mid account-switch, the supervisor no longer creates a false gameplay incident just because no fresh in-game activity arrived
 - Treats the bot as stuck immediately when the local player's first `MY_TIMER_CRITICAL` sand-clock event happens in the same match
 - Treats the bot as stuck when the local player's `TimerType_Inactivity` is running but the bot has made no decision/input for 20 seconds, even if Arena never emits a late `MY_TIMER_CRITICAL`
 - Treats a local timeout loss (`ResultReason_Timeout`) as an incident too, so a post-timeout match that fails to return home still triggers recovery and Codex notification
@@ -533,6 +534,8 @@ Default behavior:
   - Late `TimerStateMessage` updates can omit `elapsedSec` / `remainingSec`; the controller now preserves the last known local inactivity-timer values instead of overwriting them with `null`, so the supervisor's rope-stall trigger still fires
   - Legitimate controller wait phases now publish short `intentional_wait` windows too: pending-message, target-selection, pay-costs, and delayed own-priority decision scheduling no longer look like rope-stalls to the supervisor while the bot is intentionally waiting to act
   - The delayed own-priority decision timer is now keyed per turn/phase/step/active-player window, so repeated `GameState` / `TimerStateMessage` updates from the same priority state no longer keep canceling and re-arming the bot's 4-second decision callback forever
+  - Those delayed own-priority decisions are now also rope-aware: if the local `TimerType_Inactivity` rope is already low, the controller cancels/bypasses the artificial delay for that same priority window and decides immediately instead of burning the last few seconds on a stale combat/blocker wait
+  - The local `GameState` now merges keyed diff lists cumulatively instead of replacing them wholesale, so partial Arena updates no longer erase earlier battlefield/hand/stack objects that later `SelectNReq` and combat handlers still need to resolve valid ids
   - The in-game `Concede` step now searches `Buttons/concede.png` across the full detected arena first and logs the match score, then retries inside the focused ROI around the calibrated/UI target, and only then falls back to the calibrated coordinate itself
 - `Assign Damage Done` now keeps and reuses the first matched `assign_damage_done.png` point for repeated low-level clicks; if the saved `assign_damage_done` calibration is outside a plausible lower-center done-button band, the controller now skips that stale coordinate instead of clicking the wrong UI element
   - The supervisor now reads its default `Concede` fallback from `calibration_config.json` only when that saved point is already a valid 1920-relative in-window target; otherwise it uses the same `1286,611` default as the UI path instead of the older mismatched hardcoded fallback
@@ -542,6 +545,13 @@ Default behavior:
   - After a successful concede, the supervisor now watches `Player.log` for `MatchEndScene` / `MatchCompleted` / `IntermissionReq` markers and clicks the arena center to dismiss the defeat/victory screen before trying `ESC`/`HOME` recovery
   - The recovery block is now crash-hardened: if any exception happens after `incident.json` is written, the incident still gets a `recovery.json`, a `codex_notify.json`, and a `supervisor_crash.json` traceback dump instead of leaving a half-written bundle and killing the supervisor silently
   - With `--stop-after-incident`, the supervisor does not restart or requeue the bot after recovery; it leaves the newest incident bundle in place, sends the Codex `stuck` notification, captures post-recovery screenshots/state, and exits so the incident can be debugged before the next run
+  - The inactivity-stall watchdog now also checks that the local seat still owns current priority/decision in `turn_info`; the supervisor no longer concedes just because Arena keeps the local inactivity timer running while the opponent is taking their turn
+  - `MainNav load in` and queue-ready home markers now explicitly reset runtime bot state back to `HOME` and clear stale turn/timer telemetry, so a finished match or aborted logout cannot leave the supervisor thinking an old in-game combat state is still active
+  - If account switching fails to reach the login screen but Arena has already returned to `HOME` / `MainNav`, the controller now aborts that switch attempt, writes a nav-debug bundle, marks the switch interval as consumed, and resumes queueing on the current account instead of idling forever at home until the supervisor times out
+  - Stale target-selection state no longer survives into a normal own `Pass` window on the stack: if Arena already shows `pendingMessageCount=0` plus a legal local `ActionType_Pass`, the controller clears any leftover `target_selection_wait` instead of treating an old target annotation as still blocking and roping out its own main phase
+  - Early fresh-game baseline diffs now hard-reset the local controller cache too: if Arena re-enters a new game with low `gameStateId` / mulligan signals before a full snapshot is seen, the controller no longer keeps old `turnInfo`, stack, or actions from the previous match and accidentally reasons against a hybrid `turn=10 combat` plus fresh mulligan hand state
+  - Reused decision-delay timers now refresh `runtime/status.json` too: if the controller is still honoring the same 4-second own-priority delay on a later `GameState` update, it republishes `decision_delay_wait` with the remaining delay so the supervisor does not misread that legitimate wait as an `own_inactivity_timer_stalled` incident
+  - The AI-side `Active turn delay` inside `Game.decision_method()` now also publishes `active_turn_delay` as an intentional wait while it sleeps; without that, the supervisor can still misclassify the bot as stalled in perfectly normal own-turn main-phase windows after the controller delay has already fired
 
 Incident bundle contents:
 
@@ -574,6 +584,19 @@ Optional flags:
   - Recovery now also restores/focuses the MTGA window before `ESC`, `Concede`, and match-end dismiss clicks, because the detected MTGA client region alone is not enough if another desktop window is actually in the foreground
   - Before hover-based hand casts/selections, the controller now also checks for an open Arena options overlay and dismisses it with `ESC`; otherwise the menu can block the board while the bot keeps scanning and burns rope on a legal move
   - Repeated `SelectNReq` retries for the same discard/sacrifice prompt now reuse the same pending token/state instead of creating a brand-new pending request each time; this prevents stale discard retries from resetting their retry counters forever and roping out the game
+  - `informationalUseOnly=true` `SelectNReq` payloads are now cleared immediately instead of being treated like actionable hand/discard prompts; Arena can emit those as UI telemetry after it has already auto-resolved the actual selection
+  - Stack-resolution defers now inspect wrapped Arena action entries correctly; if `ActionType_Pass` is present inside the `{"seatId": ..., "action": {...}}` wrapper, the controller no longer misclassifies the turn as "must wait for stack" and stall through its own main phase
+  - Stack/pending `SelectNReq` prompts that name `GameObjectType_Ability` ids now remap those prompt ids to their `parentId` hover targets before scanning; Arena often exposes triggered-choice prompts as ability-instance ids even though the UI hover stream only reports the underlying card/object ids
+  - If our own `DeclareAttackersReq` arrives while a stack-mode `SelectNReq` retry is still running, the controller now preempts that stale stack selection immediately so combat submit/recovery can take priority instead of burning the inactivity rope behind an obsolete trigger-choice thread
+  - Preempted stack-mode `SelectN` retries now also self-cancel after their built-in delay and before any later click/submit step if their prompt token was invalidated in the meantime; this prevents a stale worker from waking up after combat already took priority and still clicking old stack targets into the `DeclareAttackersReq` window
+  - Stale `AnnotationType_PlayerSelectingTargets` state no longer blocks later main-phase/combat decisions indefinitely; if the target-selection signal is old and Arena has no pending target message anymore, the controller now auto-clears that pause instead of sitting forever in `target_selection_wait`
+  - Attach/supervisor starts now also restore `has_mulled_keep` from `ClientMessageType_MulliganResp` and, if needed, infer it from live gameplay state; otherwise the controller can remain in a fake pre-mulligan state and ignore perfectly legal `Cast/Play/Pass` windows in a fresh game
+  - Resolution-time `SelectNReq` prompts with concrete hand/battlefield/stack ids no longer re-enter the generic `stack_count > 0` wait loop inside the retry worker; if Arena already exposed real selectable ids, the controller now proceeds with the selection instead of repeatedly waiting for the stack to clear and then aborting the prompt
+  - `GameStateType_Full` snapshots now replace the local cached game state instead of being merged like diffs; without that hard reset, a fresh match can inherit `turnInfo`, zones, timers, and annotations from the previous game and leave the controller reasoning against a hybrid impossible board state
+  - Stale stack-mode `SelectN` workers no longer block a normal own-main-phase `Pass` window; if Arena already exposes `ActionType_Pass` with `pendingMessageCount=0`, the controller now auto-clears the old stack selection state and resumes real decisions instead of chasing dead stack ids
+  - Matchstart mulligan handling now treats `mulligan timer armed` separately from `has kept hand`: early pregame diffs can already expose `turnInfo`, `actions`, and even a stack object before the real `GREMessageType_MulliganReq` is resolved, so live-state keep inference is now blocked while any mulligan prompt is still pending and an actual local `MulliganReq` clears any premature keep state before stack/defer logic runs
+  - Stale merged `players[].pendingMessageType=ClientMessageType_MulliganResp` no longer keeps the bot trapped in `mulligan_wait` after the game is already underway; once Arena shows a real turn context (`turnNumber` plus `phase/step`) with normal `Play/Cast/Pass` actions, mulligan-pending detection is overridden and live keep inference is allowed to clear the old mulligan timer
+  - Once a mulligan keep timer is already armed from a real local `GREMessageType_MulliganReq`, the delayed callback now trusts that armed prompt instead of re-checking the merged live action list; fresh-game snapshots can already contain turn/action data and still need the mulligan response
   - The AI now trusts Arena's live action list over its own cached `has_land_been_played_this_turn` flag: if `ActionType_Play` is still legally available, the flag is cleared and land play is reconsidered instead of incorrectly defaulting to `resolve`
 - `--mtga-launch-cmd "<command>"`
   - Optional hard recovery path for cases where `ESC` is not enough
@@ -615,7 +638,46 @@ python tools/run_bot_ui_path.py
 Incident notes:
 
 - Real supervisor incidents are summarized in `incidents.md`
-- Each entry records the incident folder/timestamp, trigger, whether recovery / Codex notify succeeded, the actual bot-side root cause, and the fix or next debug step
+- Each entry now records the incident folder/timestamp, a signature/cluster key, trigger, whether recovery / Codex notify succeeded, the actual bot-side root cause, the fix or next debug step, and a tracking block instead of a binary "fixed" claim
+- Each supervisor incident bundle now also gets a machine-readable `tracking.json`, and repo-wide signature state lives in `incident_registry.json`
+- `tracking.json` now includes a `suggested_signature` plus `signature_basis`, generated from trigger, intentional wait reason, turn phase/step, and dominant log patterns in `bot_tail.txt` / `player_tail.txt`
+- Tracking status is evidence-based:
+  - `proposed`: Codex has a plausible diagnosis / fix, but it is not merged yet
+  - `applied`: the change is in the repo, but long-run proof does not exist yet
+  - `survived_n_runs`: the same signature has not recurred for a growing number of later runs
+  - `reproduced_and_passed`: a replay-like recurrence happened and the bot got through it
+  - `regressed`: the same signature came back again
+- Confidence should be treated as a heuristic, not truth:
+  - Start around `0.3` for a log-derived fix with no replay
+  - Raise toward `0.6` after roughly `10+` comparable runs without the same signature
+  - Raise toward `0.9` when a replay-like recurrence is survived cleanly
+  - Drop toward `0.1` and/or mark `regressed` if the same signature returns
+- Verification should stay indirect and longitudinal:
+  - Did the same signature recur later?
+  - Did the bot now progress through similar UI/log states?
+  - Did time-to-next-same-incident improve?
+  - Did the frequency of that signature decline over many runs?
+- Older entries in `incidents.md` remain legacy narrative notes; new entries should use the tracking block going forward
+- The suggested signature is only a clustering hint:
+  - confirm it if it matches the actual diagnosis
+  - override it if two incidents only look similar on the surface
+  - treat the attached `signature_basis` as the explanation of why that key was proposed
+
+Tracking helper commands:
+
+```powershell
+python tools/incident_tracking.py init --incident-dir "%LOCALAPPDATA%\\BurningLotusBot\\debug\\incident-20260403-220121"
+python tools/incident_tracking.py suggest --incident-dir "%LOCALAPPDATA%\\BurningLotusBot\\debug\\incident-20260403-220121"
+python tools/incident_tracking.py set-status --incident-dir "%LOCALAPPDATA%\\BurningLotusBot\\debug\\incident-20260403-220121" --signature "own_main_phase_decision_delay_wait_dropped" --status applied --confidence 0.3 --evidence "Patch merged after log analysis"
+python tools/incident_tracking.py record-survival --signature "own_main_phase_decision_delay_wait_dropped" --runs 10 --evidence "10 later comparable runs without recurrence"
+python tools/incident_tracking.py show --signature "own_main_phase_decision_delay_wait_dropped"
+```
+
+Notes:
+
+- `set-status` is for the first diagnosis / applied fix state
+- `record-survival` upgrades longitudinal evidence without pretending replay certainty
+- `reproduced_and_passed` and `regressed` should be written with `set-status` when a truly comparable situation is later observed
 
 ## Verify Template Assets
 
