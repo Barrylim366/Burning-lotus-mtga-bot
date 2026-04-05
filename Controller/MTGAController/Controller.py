@@ -277,6 +277,9 @@ class Controller(ControllerSecondary):
         self.__combat_recovery_timer = None
         self.__last_attack_submit_ts = 0.0
         self.__my_timer_state = {}
+        self.__emergency_concede_in_progress = False
+        self.__emergency_concede_threshold_sec = 20.0
+        self.__emergency_concede_timer: threading.Timer | None = None
         self._account_switch_interval = max(0, int(account_switch_minutes or 0)) * 60
         self._account_cycle_index = int(account_cycle_index or 0)
         self._account_play_order = account_play_order or []
@@ -2646,6 +2649,7 @@ class Controller(ControllerSecondary):
 
         for pos in positions:
             bot_logger.log_click(pos[0], pos[1], "RESOLVE")
+            runtime_status.touch_input("RESOLVE", pos)
             self.input.move_abs(pos[0], pos[1])
             self.input.left_click(1)
             time.sleep(0.05)
@@ -2980,6 +2984,75 @@ class Controller(ControllerSecondary):
             self.__inactivity_timer.cancel()
             self.__inactivity_timer = None
 
+    def __schedule_emergency_concede(self, timer_id: int, remaining_sec: float, delay: float) -> None:
+        if self.__emergency_concede_timer is not None:
+            self.__emergency_concede_timer.cancel()
+        self.__emergency_concede_in_progress = False
+        bot_logger.log_info(
+            f"EMERGENCY_CONCEDE_SCHEDULED: timerId={timer_id} remaining={remaining_sec:.1f}s "
+            f"will fire in {delay:.1f}s (at ~{self.__emergency_concede_threshold_sec:.0f}s left)"
+        )
+        self.__emergency_concede_timer = threading.Timer(delay, self.__attempt_emergency_concede)
+        self.__emergency_concede_timer.daemon = True
+        self.__emergency_concede_timer.start()
+
+    def __cancel_emergency_concede_timer(self, reason: str) -> None:
+        if self.__emergency_concede_timer is not None:
+            self.__emergency_concede_timer.cancel()
+            self.__emergency_concede_timer = None
+            bot_logger.log_info(f"EMERGENCY_CONCEDE_CANCELLED: {reason}")
+        self.__emergency_concede_in_progress = False
+
+    def __attempt_emergency_concede(self) -> None:
+        """Safety-net concede when inactivity timer is critically low and supervisor is absent."""
+        self.__emergency_concede_timer = None
+        if self._stop_requested:
+            return
+        # Don't race with an active decision/input: if bot recently acted, defer briefly and retry.
+        try:
+            status = runtime_status.read_status()
+            last_decision = float(status.get("last_decision_at_epoch") or 0.0)
+            last_input = float(status.get("last_input_at_epoch") or 0.0)
+            idle_secs = time.time() - max(last_decision, last_input)
+            if idle_secs < 8.0:
+                bot_logger.log_info(
+                    f"EMERGENCY_CONCEDE: deferred — bot recently active (idle={idle_secs:.1f}s), retrying in 5s"
+                )
+                self.__emergency_concede_timer = threading.Timer(5.0, self.__attempt_emergency_concede)
+                self.__emergency_concede_timer.daemon = True
+                self.__emergency_concede_timer.start()
+                return
+        except Exception:
+            pass
+        try:
+            self.__emergency_concede_in_progress = True
+            bot_logger.log_info("EMERGENCY_CONCEDE: starting ESC+concede sequence")
+            runtime_status.set_mode("stuck_suspected", bot_state=str(self._get_state_from_log()))
+            if focus_mtga_window():
+                time.sleep(0.3)
+            self.input.tap_escape()
+            time.sleep(0.8)
+            concede_raw = self._loaded_click_targets.get("concede", {})
+            concede_xy = (int(concede_raw.get("x", 1714)), int(concede_raw.get("y", 814)))
+            target, source = self._map_abs_point_to_arena(
+                concede_xy,
+                label="EMERGENCY_CONCEDE_BTN",
+                force_reacquire=True,
+                apply_correction=False,
+            )
+            if source == "absolute_no_arena":
+                bot_logger.log_error("EMERGENCY_CONCEDE: arena_region unavailable, skipping click")
+                return
+            bot_logger.log_info(f"EMERGENCY_CONCEDE: clicking concede at {target} (source={source})")
+            runtime_status.touch_input("EMERGENCY_CONCEDE", target)
+            self.input.move_abs(target[0], target[1])
+            time.sleep(0.1)
+            self.input.left_click(1)
+        except Exception as exc:
+            bot_logger.log_error(f"EMERGENCY_CONCEDE: exception: {exc}")
+        finally:
+            self.__emergency_concede_in_progress = False
+
     def dismiss_end_screen(self):
         """Click to dismiss match end screen and return to main menu"""
         if self._stop_requested:
@@ -3041,6 +3114,7 @@ class Controller(ControllerSecondary):
         self.__clear_combat_recovery("Reset for new game")
         self.__last_attack_submit_ts = 0.0
         self.__my_timer_state = {}
+        self.__cancel_emergency_concede_timer("new game / reset")
         # Cancel any pending decision timers
         if self.__decision_execution_thread is not None:
             self.__decision_execution_thread.cancel()
@@ -4671,6 +4745,15 @@ class Controller(ControllerSecondary):
                         f"MY_TIMER_WARNING: timerId={timer_id} type={timer_type} remaining={remaining_sec:.1f}s threshold={warning_sec:.1f}s"
                     )
                     warned = True
+                if (
+                    timer_type == "TimerType_Inactivity"
+                    and not was_running
+                    and remaining_sec is not None
+                    and remaining_sec > self.__emergency_concede_threshold_sec
+                    and not self._stop_requested
+                ):
+                    delay = remaining_sec - self.__emergency_concede_threshold_sec
+                    self.__schedule_emergency_concede(timer_id, remaining_sec, delay)
                 if remaining_sec is not None and remaining_sec <= 5.0 and not critical:
                     bot_logger.log_info(
                         f"MY_TIMER_CRITICAL: timerId={timer_id} type={timer_type} remaining={remaining_sec:.1f}s"
@@ -4724,6 +4807,8 @@ class Controller(ControllerSecondary):
             else:
                 if was_running:
                     bot_logger.log_info(f"MY_TIMER_STOP: timerId={timer_id} type={timer_type}")
+                    if timer_type == "TimerType_Inactivity":
+                        self.__cancel_emergency_concede_timer(f"timer {timer_id} stopped")
                 self.__my_timer_state[timer_id] = {
                     "running": False,
                     "warned": False,
@@ -5647,7 +5732,8 @@ class Controller(ControllerSecondary):
                 self.__decision_execution_thread = None
                 self.__decision_delay_key = None
                 self.__decision_delay_scheduled_at = 0.0
-            runtime_status.set_intentional_wait(2.0, "target_selection_wait")
+            runtime_status.set_intentional_wait(15.0, "target_selection_wait")
+            runtime_status.touch_decision()
             bot_logger.log_info("Pausing decision while target selection is pending")
             # Let target selection resolve before scheduling new decisions.
             return
@@ -5709,7 +5795,8 @@ class Controller(ControllerSecondary):
                         ti = self.updated_game_state.get_turn_info() or {}
                         if self.__should_pause_for_targets():
                             bot_logger.log_info("Deferring decision; target selection still pending")
-                            runtime_status.set_intentional_wait(2.0, "target_selection_wait")
+                            runtime_status.set_intentional_wait(15.0, "target_selection_wait")
+                            runtime_status.touch_decision()
                             self.__decision_execution_thread = threading.Timer(0.5, _decision_if_still_my_priority)
                             self.__decision_delay_key = delay_key
                             self.__decision_delay_scheduled_at = time.time()

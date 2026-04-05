@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--my-timer-stall-sec",
         type=float,
-        default=20.0,
+        default=45.0,
         help="Treat a running own inactivity timer with no bot action for this many seconds as stuck.",
     )
     parser.add_argument("--restart-delay-sec", type=float, default=3.0, help="Delay before restarting the bot.")
@@ -109,12 +109,26 @@ def main() -> int:
     input_controller = create_input_controller(args.input_backend)
     last_recovery_epoch = 0.0
 
+    child_restart_count = 0
     while True:
         child = start_child(command)
         child_started_at = time.time()
+        child_restart_count += 1
         try:
             while True:
                 if child.poll() is not None:
+                    exit_code = child.poll()
+                    if args.stop_after_incident and child_restart_count > 1:
+                        try:
+                            print(
+                                f"[supervisor] child exited (code={exit_code}) after restart #{child_restart_count}, "
+                                "stop_after_incident: exiting.",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
+                        return 0
                     break
                 status = read_status()
                 if not status:
@@ -356,7 +370,12 @@ def detect_stuck_reason(status: dict, args: argparse.Namespace) -> str | None:
             last_decision = float(status.get("last_decision_at_epoch") or 0.0)
         except Exception:
             last_decision = 0.0
-        action_latest = max(last_input, last_decision)
+        try:
+            last_playerlog = float(status.get("last_playerlog_event_at_epoch") or 0.0)
+        except Exception:
+            last_playerlog = 0.0
+        # Include last_playerlog: if opponent is actively playing, the game is not stalled.
+        action_latest = max(last_input, last_decision, last_playerlog)
         action_idle = max(0.0, time.time() - action_latest) if action_latest > 0.0 else 0.0
         if wait_active and timer_remaining > 8.0:
             return None
