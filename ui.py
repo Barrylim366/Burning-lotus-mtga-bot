@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageStat, ImageTk
 import json
 import threading
 from Controller.Utilities.input_controller import InputControllerError, create_input_controller
-from licensing.validator import LicenseValidationResult, activateOnline, ensureLicensedOrExit, require_license_or_block
+from runtime_paths import runtime_file
 from vision.window_locator import ArenaDetectionResult, run_arena_setup_check
 
 # Import bot components
@@ -1365,8 +1365,11 @@ class SavedButtonsWindow(tk.Toplevel):
 class ConfigManager:
     """Manages loading and saving of calibration configuration"""
 
-    def __init__(self, config_path="calibration_config.json"):
-        self.config_path = config_path if os.path.isabs(config_path) else _app_path(config_path)
+    def __init__(self, config_path: str | None = None):
+        if config_path:
+            self.config_path = config_path if os.path.isabs(config_path) else _app_path(config_path)
+        else:
+            self.config_path = str(runtime_file("config", "calibration_config.json"))
         self.config = self._load_config()
 
     def _detect_player_log_path(self) -> str:
@@ -1890,11 +1893,6 @@ class MTGBotUI(tk.Tk):
         self.current_session_window = None
         self._controller = None
         self._switch_eta_text = self._get_configured_switch_eta_text()
-        self._license_result: LicenseValidationResult | None = None
-        self._license_active = False
-        self._license_notice_shown = False
-        self._auto_reactivation_prompted = False
-        self._startup_license_flow_done = False
 
         self.ui_theme = self._build_ui_theme()
         self.configure(bg=self.ui_theme["colors"]["bg"])
@@ -1908,83 +1906,6 @@ class MTGBotUI(tk.Tk):
         self._setup_ui()
         self.apply_window_topmost_mode(self.config_manager.get_ui_windows_topmost())
         self._setup_stop_hotkey()
-        self.after(220, self._run_startup_license_flow)
-
-    def _run_startup_license_flow(self) -> None:
-        if self._startup_license_flow_done:
-            return
-        self._startup_license_flow_done = True
-        self._ensure_license_on_startup()
-        self._refresh_license_state(show_hint=not self._license_active)
-
-    def _ensure_license_on_startup(self) -> None:
-        failure_box_shown = {"value": False}
-
-        def _prompt(previous_result: LicenseValidationResult | None) -> str:
-            if (
-                previous_result is not None
-                and previous_result.code not in ("not_activated", "")
-                and not previous_result.valid
-                and not failure_box_shown["value"]
-            ):
-                failure_box_shown["value"] = True
-                messagebox.showerror(
-                    "License activation failed",
-                    f"Reason: {previous_result.code}\n{previous_result.message}",
-                    parent=self,
-                )
-            msg = "Enter License Key"
-            if previous_result is not None and previous_result.code:
-                msg = f"Enter License Key\n\nReason: {previous_result.code}"
-            value = self._prompt_license_key_modal(msg)
-            failure_box_shown["value"] = False
-            return (value or "").strip()
-
-        result = ensureLicensedOrExit(prompt_license_key=_prompt)
-        self._license_result = result
-        self._license_active = result.valid
-        if not result.valid:
-            self._license_notice_shown = True
-
-    def _prompt_license_key_modal(self, prompt_text: str) -> str | None:
-        result = {"value": None}
-        dialog = tk.Toplevel(self)
-        dialog.title("License Activation")
-        dialog.resizable(False, False)
-        dialog.transient(self)
-        _apply_window_topmost(dialog, self.config_manager.get_ui_windows_topmost())
-
-        frame = ttk.Frame(dialog, padding=14)
-        frame.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(frame, text=prompt_text, justify="left", wraplength=420).pack(anchor="w", pady=(0, 10))
-
-        entry_var = tk.StringVar(value="")
-        entry = ttk.Entry(frame, textvariable=entry_var, width=56)
-        entry.pack(fill=tk.X, expand=True, pady=(0, 10))
-
-        btn_row = ttk.Frame(frame)
-        btn_row.pack(fill=tk.X, expand=True)
-
-        def _ok() -> None:
-            result["value"] = entry_var.get().strip()
-            dialog.destroy()
-
-        def _cancel() -> None:
-            result["value"] = None
-            dialog.destroy()
-
-        ttk.Button(btn_row, text="OK", command=_ok).pack(side=tk.RIGHT, padx=(8, 0))
-        ttk.Button(btn_row, text="Cancel", command=_cancel).pack(side=tk.RIGHT)
-
-        dialog.protocol("WM_DELETE_WINDOW", _cancel)
-        self.update_idletasks()
-        x = self.winfo_x() + max(0, (self.winfo_width() - 460) // 2)
-        y = self.winfo_y() + max(0, (self.winfo_height() - 180) // 2)
-        dialog.geometry(f"+{x}+{y}")
-        entry.focus_set()
-        dialog.grab_set()
-        self.wait_window(dialog)
-        return result["value"]
 
     def _ensure_player_log_path_configured(self) -> bool:
         current_log = str(self.config_manager.get_log_path() or "").strip()
@@ -2877,9 +2798,9 @@ class MTGBotUI(tk.Tk):
             )
             return
 
-        self._set_canvas_menu_button_enabled("start", bool(self._license_active))
+        self._set_canvas_menu_button_enabled("start", True)
         self._set_canvas_menu_button_enabled("stop", False)
-        status_text = "Status: Stopped" if self._license_active else "Status: License Required"
+        status_text = "Status: Stopped"
         self._card_canvas.itemconfigure(
             self._status_text_item,
             text=status_text,
@@ -2926,36 +2847,6 @@ class MTGBotUI(tk.Tk):
         if self.bot_running:
             return
 
-        license_result = require_license_or_block()
-        self._license_result = license_result
-        self._license_active = license_result.valid
-        if not license_result.valid:
-            reactivated = self._prompt_reactivation_modal(license_result)
-            self._license_result = reactivated
-            self._license_active = reactivated.valid
-            if reactivated.valid:
-                self._license_notice_shown = False
-                license_result = reactivated
-            else:
-                self._set_running_state(False)
-                self._license_notice_shown = True
-                messagebox.showwarning(
-                    "License required",
-                    f"{reactivated.message}\n\nEnter a valid license key to continue.",
-                )
-                return
-
-        self._license_result = license_result
-        self._license_active = bool(license_result.valid)
-        if not self._license_active:
-            self._set_running_state(False)
-            self._license_notice_shown = True
-            messagebox.showwarning(
-                "License required",
-                f"{license_result.message}\n\nEnter a valid license key to continue.",
-            )
-            return
-
         setup_ok = self._run_arena_setup_check(show_success=False)
         if not setup_ok:
             return
@@ -2968,34 +2859,6 @@ class MTGBotUI(tk.Tk):
         self.bot_thread = threading.Thread(target=self._run_bot, daemon=True)
         self.bot_thread.start()
         self._update_switch_eta()
-
-    def _prompt_reactivation_modal(self, previous_result: LicenseValidationResult | None = None) -> LicenseValidationResult:
-        last = previous_result
-        while True:
-            msg = "Enter License Key"
-            if last is not None and last.code:
-                msg = f"Enter License Key\n\nReason: {last.code}"
-            entered = (self._prompt_license_key_modal(msg) or "").strip()
-            if not entered:
-                if last is not None:
-                    return last
-                return LicenseValidationResult(
-                    valid=False,
-                    code="not_activated",
-                    message="License activation cancelled.",
-                    payload=None,
-                    device_id=None,
-                    license_path=None,
-                )
-            activated = activateOnline(entered)
-            if activated.valid:
-                return activated
-            messagebox.showerror(
-                "License activation failed",
-                f"Reason: {activated.code}\n{activated.message}",
-                parent=self,
-            )
-            last = activated
 
     def _check_arena_setup(self):
         self._run_arena_setup_check(show_success=True)
@@ -3141,38 +3004,6 @@ class MTGBotUI(tk.Tk):
         self._set_running_state(False)
         self._set_startup_loading(False)
         self._controller = None
-
-    def _refresh_license_state(self, show_hint: bool = False) -> None:
-        result = require_license_or_block()
-        self._license_result = result
-        self._license_active = result.valid
-        if not self.bot_running:
-            self._set_running_state(False)
-
-        if result.valid:
-            self._license_notice_shown = False
-            self._auto_reactivation_prompted = False
-            return
-
-        if not self.bot_running and not self._auto_reactivation_prompted:
-            self._auto_reactivation_prompted = True
-            reactivated = self._prompt_reactivation_modal(result)
-            self._license_result = reactivated
-            self._license_active = reactivated.valid
-            if reactivated.valid:
-                self._license_notice_shown = False
-                self._auto_reactivation_prompted = False
-                if not self.bot_running:
-                    self._set_running_state(False)
-                return
-            result = reactivated
-
-        if show_hint and not self._license_notice_shown:
-            self._license_notice_shown = True
-            messagebox.showinfo(
-                "License",
-                f"{result.message}\n\nBot functions are blocked until a valid license is activated.",
-            )
 
     def _open_calibration(self):
         CalibrationWindow(self, self.config_manager)
@@ -3552,7 +3383,7 @@ class SettingsWindow(tk.Toplevel):
         self._playback_keyboard_listener = None
         self._playback_stop_event = threading.Event()
         self._current_record_events = []
-        self._records_path = _app_path("recorded_actions_records.json")
+        self._records_path = str(runtime_file("records", "recorded_actions_records.json"))
         self._switch_save_job = None
         self.record_btn = None
         self.show_records_btn = None

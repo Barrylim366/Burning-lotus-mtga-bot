@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Controller.MTGAController.Controller import Controller
+from runtime_paths import runtime_file
 
 
 def _load_config(path: Path) -> dict:
@@ -33,8 +34,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    root = ROOT
-    cfg_path = root / "calibration_config.json"
+    cfg_path = runtime_file("config", "calibration_config.json")
     if not cfg_path.exists():
         print(f"calibration_config.json nicht gefunden: {cfg_path}")
         return 1

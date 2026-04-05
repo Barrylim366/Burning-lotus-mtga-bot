@@ -7,9 +7,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from runtime_paths import runtime_file
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-REGISTRY_PATH = ROOT_DIR / "incident_registry.json"
+REGISTRY_PATH = runtime_file("incident_registry.json")
 VALID_STATUSES = {
     "proposed",
     "applied",

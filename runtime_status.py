@@ -8,14 +8,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import bot_logger
+from runtime_paths import runtime_file
 
 _LOCK = threading.RLock()
 _SESSION_ID = uuid.uuid4().hex
 
 
 def get_runtime_dir() -> str:
-    path = Path(bot_logger.get_app_log_dir()) / "runtime"
+    path = runtime_file().resolve()
     try:
         path.mkdir(parents=True, exist_ok=True)
     except Exception:

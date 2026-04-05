@@ -16,6 +16,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from Controller.Utilities.input_controller import create_input_controller
 from bot_logger import ensure_debug_dir
+from runtime_paths import runtime_file
 from runtime_status import get_status_path, read_status
 from state.state_machine import BotState, get_state_from_playerlog
 from tools.incident_tracking import ensure_tracking_file
@@ -25,7 +26,7 @@ from vision.window_locator import ArenaRegionProvider, focus_mtga_window
 
 def load_default_concede_rel() -> tuple[int, int]:
     default_rel = (962, 631)
-    config_path = ROOT_DIR / "calibration_config.json"
+    config_path = runtime_file("config", "calibration_config.json")
     try:
         if not config_path.is_file():
             return default_rel
@@ -74,7 +75,7 @@ def parse_args() -> argparse.Namespace:
         help="Stop the supervisor after one handled incident instead of restarting the bot automatically.",
     )
     parser.add_argument("--input-backend", default=os.environ.get("MTGA_BOT_INPUT_BACKEND", "auto"))
-    parser.add_argument("--codex-template", default=str(ROOT_DIR / "codex_window.png"))
+    parser.add_argument("--codex-template", default=str(ROOT_DIR / "supervisor" / "codex_window.png"))
     parser.add_argument("--mtga-launch-cmd", default=os.environ.get("MTGA_SUPERVISOR_MTGA_LAUNCH_CMD", ""))
     parser.add_argument(
         "--mtga-process-names",
@@ -936,10 +937,7 @@ def resolve_playerlog_path(status: dict) -> str:
 
 
 def resolve_bot_log_path() -> str:
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        return str(Path(local) / "BurningLotusBot" / "bot.log")
-    return str(ROOT_DIR / "bot.log")
+    return str(runtime_file("logs", "bot.log"))
 
 
 def read_tail(path: str, *, max_bytes: int) -> str:

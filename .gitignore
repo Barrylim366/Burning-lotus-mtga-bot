@@ -9,10 +9,15 @@ NUL
 build/
 dist/
 dist_nuitka/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
 # Local environment
 .venv/
 *.log
+runtime/
 
 # Keep folders, ignore their contents
 Buttons/*

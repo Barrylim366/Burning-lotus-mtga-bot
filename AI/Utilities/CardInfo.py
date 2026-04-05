@@ -4,6 +4,9 @@ import urllib.error
 import os
 import shutil
 import sys
+from pathlib import Path
+
+from runtime_paths import ensure_runtime_subdir
 
 
 def _app_root_dir() -> str:
@@ -13,7 +16,7 @@ def _app_root_dir() -> str:
 
 
 def _app_data_path(filename: str) -> str:
-    return os.path.join(_app_root_dir(), filename)
+    return str(ensure_runtime_subdir("cache") / filename)
 
 
 def _resource_root_dir() -> str:
@@ -25,6 +28,9 @@ def _resource_root_dir() -> str:
 
 
 def _resource_data_path(filename: str) -> str:
+    data_candidate = os.path.join(_resource_root_dir(), "data", filename)
+    if os.path.exists(data_candidate):
+        return data_candidate
     return os.path.join(_resource_root_dir(), filename)
 
 

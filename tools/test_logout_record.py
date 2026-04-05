@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 from pynput import keyboard, mouse
+from runtime_paths import runtime_file
 
 
 def _load_logout_record(path: Path) -> dict | None:
@@ -18,8 +19,7 @@ def _load_logout_record(path: Path) -> dict | None:
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parent.parent
-    record_path = root / "recorded_actions_records.json"
+    record_path = runtime_file("records", "recorded_actions_records.json")
     if not record_path.exists():
         print(f"recorded_actions_records.json nicht gefunden: {record_path}")
         return 1
