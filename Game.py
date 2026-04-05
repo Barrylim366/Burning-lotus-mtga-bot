@@ -2,7 +2,6 @@ from Controller.ControllerInterface import ControllerSecondary
 from AI.AIInterface import AIKernel
 from Controller.Utilities.GameState import GameState
 import AI.Utilities.CardInfo as CardInfo
-from datetime import datetime
 import time
 import os
 import traceback
@@ -16,9 +15,6 @@ class Game:
     def __init__(self, controller: ControllerSecondary, ai: AIKernel):
         self.ai = ai
         self.controller = controller
-        self.human_log_file = "human.log"
-        self.bot_log_file = "bot.log"
-        self._human_log_fallback_warned = False
         self.last_logged_turn = -1
         self.game_started = False
         self.starting_hand_logged = False
@@ -26,61 +22,8 @@ class Game:
         self._timers: list[threading.Timer] = []
         self._last_action_delay_turn = -1
 
-        # Clear log files on start
-        self._init_human_log()
         # Initialize bot.log with centralized logger
         bot_logger.init_bot_log()
-
-    def _resolve_human_log_path(self) -> str:
-        """Resolve a writable per-user human.log location."""
-        try:
-            if os.name == "nt":
-                base = os.environ.get("LOCALAPPDATA")
-                if base:
-                    target_dir = Path(base) / "BurningLotusBot"
-                else:
-                    target_dir = Path.home() / "AppData" / "Local" / "BurningLotusBot"
-            elif sys.platform == "darwin":
-                target_dir = Path.home() / "Library" / "Application Support" / "BurningLotusBot"
-            else:
-                target_dir = Path.home() / ".config" / "burninglotusbot"
-            target_dir.mkdir(parents=True, exist_ok=True)
-            return str(target_dir / "human.log")
-        except Exception:
-            return "human.log"
-
-    def _write_human_lines(self, mode: str, lines: list[str]) -> None:
-        """Write human logs with fallback; never crash the game loop."""
-        try:
-            with open(self.human_log_file, mode, encoding="utf-8") as f:
-                for line in lines:
-                    f.write(line)
-            return
-        except Exception:
-            pass
-
-        try:
-            with open("human.log", mode, encoding="utf-8") as f:
-                for line in lines:
-                    f.write(line)
-            if not self._human_log_fallback_warned:
-                self._human_log_fallback_warned = True
-                self._debug(
-                    f"Warning: failed writing '{self.human_log_file}', using local 'human.log' fallback."
-                )
-        except Exception:
-            pass
-
-    def _init_human_log(self):
-        started_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        self._write_human_lines(
-            'w',
-            [
-                "=== MTGA Bot Session Started ===\n",
-                f"Started at: {started_at}\n",
-                "=" * 35 + "\n\n",
-            ],
-        )
 
     def start(self):
         self._debug("Game.start() called")
@@ -106,12 +49,6 @@ class Game:
             return
         runtime_status.set_mode("match_end")
         self._debug("Match ended - scheduling restart in 10 seconds")
-        self._human_log("\n=== MATCH ENDED ===")
-        if won is True:
-            self._human_log("Result: WIN")
-        elif won is False:
-            self._human_log("Result: LOSS")
-        self._human_log("Restarting in 10 seconds...\n")
         # Stop inactivity timer since match ended
         if hasattr(self.controller, 'stop_inactivity_timer'):
             self.controller.stop_inactivity_timer()
@@ -126,7 +63,6 @@ class Game:
             return
         runtime_status.set_mode("restarting")
         self._debug("Restarting game...")
-        self._human_log("=== STARTING NEW GAME ===\n")
 
         # Reset Game state
         self.last_logged_turn = -1
@@ -184,16 +120,10 @@ class Game:
             return
         self._debug(f"Mulligan decision called with {len(card_list)} cards")
         runtime_status.set_mode("in_game")
-        self._human_log("Keeping hand")
         self.game_started = True  # Mark game as started after mulligan
         keep = self.ai.generate_keep(card_list)
         bot_logger.log_mulligan_decision(keep, len(card_list))
         self.controller.keep(keep)
-
-    def _human_log(self, message):
-        """Human-readable log - clean, simple messages"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self._write_human_lines('a', [f"[{timestamp}] {message}\n"])
 
     def _debug(self, message):
         """Debug log - detailed technical information"""
@@ -234,7 +164,7 @@ class Game:
                 return
             self._debug(f"Card data refresh: exporting from {data_dir}")
             result = subprocess.run(
-                [sys.executable, "mtga_cards_export.py", "--data-dir", data_dir],
+                [sys.executable, os.path.join("tools", "mtga_cards_export.py"), "--data-dir", data_dir],
                 cwd=os.path.dirname(__file__),
                 timeout=30,
                 check=False,
@@ -370,31 +300,17 @@ class Game:
                     pass
                 self._last_action_delay_turn = turn_num
 
-            # Log new turn in human log (only once per turn, only for MY turns)
             if turn_num != self.last_logged_turn and active_player == 1:
                 self.last_logged_turn = turn_num
 
-                # Log starting hand on first turn (when dict is populated)
                 if not self.starting_hand_logged:
                     self.starting_hand_logged = True
-                    self._human_log("Starting hand:")
                     try:
                         inst_id_grp_id_dict = self.controller.get_inst_id_grp_id_dict()
                         self._debug(f"Logging starting hand: {len(inst_id_grp_id_dict)} cards")
-                        for inst_id, grp_id in inst_id_grp_id_dict.items():
-                            card_info = CardInfo.get_card_info(grp_id)
-                            if card_info:
-                                types = card_info.get('types', [])
-                                type_str = '/'.join(types) if types else 'Unknown'
-                                self._human_log(f"  - {type_str} (inst={inst_id}, grp={grp_id})")
-                            else:
-                                self._human_log(f"  - Unknown (inst={inst_id}, grp={grp_id})")
                     except Exception as e:
                         self._debug(f"Error logging starting hand: {e}")
 
-                self._human_log(f"\n--- Turn {turn_num} (ME) ---")
-
-                # Count available mana from ActionType_Activate_Mana actions (unique lands)
                 if turn_num > 1:
                     try:
                         action_list = current_game_state.get_actions()
@@ -406,8 +322,6 @@ class Game:
                                     inst_id = action.get('instanceId')
                                     if inst_id:
                                         mana_sources.add(inst_id)
-                            if len(mana_sources) > 0:
-                                self._human_log(f"Available Mana: {len(mana_sources)}")
                     except Exception as e:
                         self._debug(f"Could not get mana info: {e}")
 
@@ -457,26 +371,24 @@ class Game:
                 if card_info:
                     types = card_info.get('types', [])
                     if 'Land' in types:
-                        self._human_log(f"  -> Play Land {card_id_str}")
+                        self._debug(f"Play Land {card_id_str}")
                     elif 'Creature' in types:
-                        self._human_log(f"  -> Cast Creature {card_id_str}")
+                        self._debug(f"Cast Creature {card_id_str}")
                     else:
-                        self._human_log(f"  -> Cast {card_id_str}")
+                        self._debug(f"Cast {card_id_str}")
                 else:
-                    self._human_log(f"  -> Cast {card_id_str}")
+                    self._debug(f"Cast {card_id_str}")
                 self.controller.cast(inst_id)
             elif move_name == 'attack':
                 self._debug(f"Attacking with {move[move_name][0]}")
                 self.controller.attack(move[move_name][0])
             elif move_name == 'all_attack':
-                self._human_log("  -> Attack All")
                 self._debug("Executing all_attack")
                 self.controller.all_attack()
             elif move_name == 'block':
                 self._debug(f"Blocking: {move[move_name]}")
                 self.controller.block(move[move_name][0], move[move_name][1])
             elif move_name == 'all_block':
-                self._human_log("  -> Block All")
                 self._debug("Executing all_block")
                 self.controller.all_block()
             elif move_name == 'select_target':
@@ -500,7 +412,6 @@ class Game:
         except Exception as e:
             self._debug(f"CRITICAL ERROR in decision_method: {e}")
             self._debug(traceback.format_exc())
-            self._human_log(f"  [ERROR] Bot encountered an error: {e}")
         finally:
             if delay_wait_active:
                 runtime_status.clear_intentional_wait()

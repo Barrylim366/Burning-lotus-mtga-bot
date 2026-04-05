@@ -4,8 +4,8 @@ Centralized bot logging - logs all parsed player.log data with timestamps
 from datetime import datetime
 import os
 from pathlib import Path
-import sys
 import threading
+from runtime_paths import ensure_runtime_subdir, runtime_file
 
 _log_lock = threading.Lock()
 _fallback_warning_printed = False
@@ -13,21 +13,9 @@ _hover_logging_enabled = False
 
 
 def _resolve_bot_log_path() -> str:
-    """Resolve a writable per-user bot.log location."""
+    """Resolve the repo-local runtime bot.log location."""
     try:
-        if os.name == "nt":
-            base = os.environ.get("LOCALAPPDATA")
-            if base:
-                target_dir = Path(base) / "BurningLotusBot"
-            else:
-                target_dir = Path.home() / "AppData" / "Local" / "BurningLotusBot"
-        elif sys.platform == "darwin":
-            target_dir = Path.home() / "Library" / "Application Support" / "BurningLotusBot"
-        else:
-            target_dir = Path.home() / ".config" / "burninglotusbot"
-
-        target_dir.mkdir(parents=True, exist_ok=True)
-        return str(target_dir / "bot.log")
+        return str(runtime_file("logs", "bot.log"))
     except Exception:
         # Last-resort fallback to previous relative behavior.
         return "bot.log"
@@ -43,16 +31,16 @@ def init_bot_log():
 
 
 def get_app_log_dir() -> str:
-    """Return the preferred per-user app log directory."""
+    """Return the repo-local runtime log directory."""
     try:
-        return str(Path(BOT_LOG_FILE).resolve().parent)
+        return str(ensure_runtime_subdir("logs").resolve())
     except Exception:
         return str(Path(".").resolve())
 
 
 def ensure_debug_dir(subdir: str | None = None) -> str:
     """Create and return a debug output directory."""
-    base = Path(get_app_log_dir()) / "debug"
+    base = ensure_runtime_subdir("debug")
     if subdir:
         base = base / str(subdir)
     try:

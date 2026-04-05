@@ -19,6 +19,7 @@ from vision.vision import VisionEngine
 from vision.window_locator import ArenaRegionProvider, focus_mtga_window
 import bot_logger
 import runtime_status
+from runtime_paths import runtime_file
 
 _TARGET_FIELD_UNSET = object()
 _GUILD_COLOR_MAP = {
@@ -3299,7 +3300,7 @@ class Controller(ControllerSecondary):
     def _load_logout_click_points_from_record(
         self,
     ) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]] | None:
-        path = self._app_path("recorded_actions_records.json")
+        path = str(runtime_file("records", "recorded_actions_records.json"))
         if not os.path.exists(path):
             return None
         try:
@@ -3397,7 +3398,7 @@ class Controller(ControllerSecondary):
         log_out_pt: tuple[int, int],
         log_out_ok_pt: tuple[int, int],
     ) -> None:
-        config_path = self._app_path("calibration_config.json")
+        config_path = str(runtime_file("config", "calibration_config.json"))
         if not os.path.exists(config_path):
             return
         try:
@@ -3427,7 +3428,7 @@ class Controller(ControllerSecondary):
             pass
 
     def _replay_named_record(self, name: str, tag_prefix: str = "REPLAY", allow_keys: set[str] | None = None) -> bool:
-        path = self._app_path("recorded_actions_records.json")
+        path = str(runtime_file("records", "recorded_actions_records.json"))
         if not os.path.exists(path):
             return False
         try:
@@ -3921,7 +3922,7 @@ class Controller(ControllerSecondary):
 
     def _persist_account_cycle_index(self) -> None:
         try:
-            config_path = self._app_path("calibration_config.json")
+            config_path = str(runtime_file("config", "calibration_config.json"))
             if not os.path.exists(config_path):
                 return
             with open(config_path, "r", encoding="utf-8") as f:

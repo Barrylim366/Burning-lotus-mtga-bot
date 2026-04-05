@@ -12,7 +12,6 @@ Automated MTGA bot with UI, calibration, account switching, and quest-based deck
   - opencv-python (needed for image matching confidence)
   - pillow
   - pynput
-  - cryptography (ECDSA P-256 license token verification)
 
 Input backend:
 - Default is `auto`.
@@ -26,7 +25,7 @@ Input backend:
 Install packages:
 
 ```
-pip install pyautogui opencv-python pillow pynput cryptography
+pip install pyautogui opencv-python pillow pynput
 ```
 
 ## Quick Start
@@ -123,7 +122,7 @@ The main window now uses a ttk-based dark theme with centralized design tokens i
 - Switch group height was increased and `Save Time` moved lower to avoid overlap with the switch label line
 - Manage Accounts window was widened slightly and group boxes are now inset with more symmetric left/right spacing
 - Saving accounts creates/updates one folder per account under `Accounts/` and writes `credentials.json` inside that folder
-- Account credentials are no longer stored in `calibration_config.json`; `Manage Accounts` reloads them from the per-account `Accounts/<folder>/credentials.json` files
+- Account credentials are no longer stored in `runtime/config/calibration_config.json`; `Manage Accounts` reloads them from the per-account `Accounts/<folder>/credentials.json` files
 - Row selection is clickable; the selected row gets highlight and its values are editable in the inline detail fields below the table
 - Password fields in **Manage Accounts** are masked (`*`) while typing
 - `Save Row` updates the selected row in memory, `Save Accounts` persists all valid rows to config/folders
@@ -195,7 +194,7 @@ The runtime tries to locate MTGA dynamically:
    - Use **Save Accounts** to create/update account folders and credentials JSONs.
    - Use **Save Order** to persist the play order.
    - **Record Action** opens a window for **Record** (uses F8 to stop) and **Show Records**.
-     Saved records include per-action timestamps (`ts`) in `recorded_actions_records.json`.
+     Saved records include per-action timestamps (`ts`) in `runtime/records/recorded_actions_records.json`.
   - Includes **Calibrate** and **User Interface** buttons.
   - Opening any Settings subwindow (**Manage Accounts**, **Record Action**, **Calibrate**, **User Interface**) temporarily replaces the Settings window at the same screen position.
   - **User Interface** opens a settings window with:
@@ -205,113 +204,18 @@ The runtime tries to locate MTGA dynamically:
   - On `Save`, UI scale is applied immediately in-app (no restart required).
   - Subwindow minimum sizes are now derived from actual visible content bounds to avoid clipping without forcing oversized windows.
 
-5) If no valid license is active, the app prompts for your **License Key** automatically on startup or before bot start.
-   - The **License** dialog also supports manual token/file import for compatibility paths and shows an emergency-code field.
-
-6) Start Bot (only possible with valid activated license).
+5) Start Bot.
    - Before the bot starts, the app checks that MTGA is visible with an exact windowed `1920x1080` client area and that Windows display scaling is `100%`.
    - If that check fails, the app writes an Arena setup debug bundle with diagnostics and screenshots.
 
 Stop bot any time with **Mouse Wheel**.
-
-## Online Activation + Local Token Verification (ECDSA P-256)
-
-- Bot automation is blocked by default until a valid license is activated.
-- License check runs on app startup and again before bot start.
-- Runtime checks now include periodic online re-validation against `https://burninglotusbot.com/api/validate-license`.
-- Without a valid license, **Start Bot** remains disabled and the UI shows a hint.
-- If runtime validation fails (for example revoked/deleted server-side), the app opens the license key prompt automatically so re-activation can be done immediately (no app restart required).
-- The **License** dialog supports both the normal online **License Key** activation flow and compatibility fallbacks:
-  - paste/import a stored license token or license file
-  - copy the current machine/device id
-  - enter an emergency code (current validator returns unsupported in this build, but the UI/API path remains available for compatibility)
-
-Public key location:
-- Put your EC P-256 JWK in `config/public_key.jwk` (fields: `kty`, `crv`, `x`, `y`).
-- Optional overrides:
-  - `BLB_PUBLIC_JWK` (inline JSON string)
-  - `BLB_PUBLIC_JWK_FILE` (path to JSON file)
-
-Device binding:
-- `machineId` is derived from a stable OS fingerprint.
-- Activated token payload must match current:
-  - `lic` (license key)
-  - `mid` (machine id)
-  - `plat` (`win`/`mac`/`linux`)
-  - `exp` (unix expiry timestamp)
-
-Stored license path (per user):
-- Windows: `%APPDATA%/BurningLotus/license.json`
-- Linux: `~/.config/burninglotus/license.json`
-- macOS: `~/Library/Application Support/BurningLotus/license.json`
-
-Validation checks:
-- ECDSA signature valid for token payload
-- Payload/license key matches local activated key
-- Payload machine id matches current machine
-- Payload platform matches current platform
-- Token is not expired
-- Periodic server-side validation (revocation/status) via validate endpoint
-
-Re-validation timing (optional env vars):
-- `BLB_LICENSE_VALIDATE_INTERVAL_SECONDS` (default: `86400`)
-  - Interval for mandatory online re-validation.
-  - `0` means re-validate on every runtime check.
-- `BLB_LICENSE_VALIDATE_GRACE_SECONDS` (default: `172800`)
-  - Extra offline grace window if the validate call fails with network errors.
-  - Grace applies only when there was a previous successful activation/validation anchor.
-
-Typical error messages:
-- `signature_invalid`
-- `machine_mismatch`
-- `platform_mismatch`
-- `token_expired`
-- `crypto_missing`
-- `key_error`
-- `license_revoked`
-- `network_error`
-- `ok_offline_grace`
-
-Legacy note:
-- `tools/gen_license.py` and `tools/ui_licensing.py` belong to an older offline `.bllic` workflow and are not used by the runtime activation path in this build.
-
-## Windows Build (Nuitka)
-
-This branch ships a Windows-only build path. Use Nuitka for a compiled standalone Windows build.
-The build script bundles the runtime verify templates from `assets/assert` so the packaged app keeps arena-window auto-detection and verification.
-The build script also sanitizes `managed_accounts` out of the bundled `calibration_config.json` so local Manage Accounts credentials are not shipped inside customer builds.
-The build also requires and includes `recorded_actions_records.json`; if that file is missing, the build aborts so customer packages do not ship without the expected recorded actions.
-
-1) Install prerequisites:
-
-- Microsoft C++ Build Tools (Visual Studio Build Tools, C++ workload)
-- Python packages:
-
-```bash
-python -m pip install nuitka ordered-set zstandard
-```
-
-Notes:
-- With Python 3.13, Nuitka may require MSVC 14.3+ for normal C compilation.
-- `build_windows_nuitka.bat` automatically retries using `--zig` if the default compiler path fails.
-
-2) Build standalone folder:
-
-```bat
-build_windows_nuitka.bat
-```
-
-3) Output:
-
-- `dist_nuitka/ui.dist/BurningLotusBot.exe`
-- For distribution, copy the whole folder `dist_nuitka/ui.dist`.
 
 ## Account Switching
 
 - Accounts are managed via **Settings -> Manage Accounts**.
 - Each account is saved in its own folder under `Accounts/` and includes `credentials.json` in this format:
   - `{ "<AccountName>": { "email": "...", "pw": "..." } }`
-- `calibration_config.json` no longer stores managed account credentials; the UI reloads accounts by scanning the account folders.
+- `runtime/config/calibration_config.json` no longer stores managed account credentials; the UI reloads accounts by scanning the account folders.
 - `Accounts/` is gitignored by default so local account folders are not pushed to GitHub.
 - Switch happens when the timer expires and the bot reaches a safe screen.
 - Logout/login uses recorded action sequence + credentials injection.
@@ -403,52 +307,35 @@ Timer transitions are logged as:
 ## Card Data Updates
 
 On startup:
-- MTGA card DB export refreshes `cards.json` if the local MTGA data changed.
+- MTGA card DB export refreshes `runtime/cache/cards.json` if the local MTGA data changed.
 - Raw card-data discovery supports common Linux Steam paths, macOS Steam install paths, and Windows Steam install paths.
 - Scryfall bulk delta check fetches new Arena IDs and merges missing cards.
-If `cards.json` is missing on first run, it will be generated automatically.
+If `runtime/cache/cards.json` is missing on first run, it is seeded from the repo copy of `data/cards.json` or generated automatically.
 
 Fallback:
-- `missing_cards.json` tracks cards encountered in matches but not in `cards.json`.
-
-## Licensing Tests
-
-Run the new licensing tests with:
-
-```bash
-python -m unittest tests/test_licensing.py
-```
-
-- The signature roundtrip test is skipped automatically if `cryptography` is not installed.
+- `runtime/cache/missing_cards.json` tracks cards encountered in matches but not in `runtime/cache/cards.json`.
+- Other local cache files such as `scryfall_cache.json`, `scryfall_oracle_cache.json`, and `scryfall_bulk_metadata.json` also live under `runtime/cache/`.
 
 ## Logs
 
 - `bot.log` - main bot debug
-  - Stored in a per-user writable app folder:
-    - Windows: `%LOCALAPPDATA%/BurningLotusBot/bot.log`
-    - macOS: `~/Library/Application Support/BurningLotusBot/bot.log`
-    - Linux: `~/.config/burninglotusbot/bot.log`
+  - Stored at `runtime/logs/bot.log`
   - If writing there fails, logger falls back to local `./bot.log` without stopping the bot.
   - Full parsed game-state snapshots stay in `bot.log`; they are no longer echoed to process `stdout`, so supervisor runs do not spam the terminal/chat with live `Player.log` state dumps.
-- `human.log` - high-level actions
-  - Stored in a per-user writable app folder:
-    - Windows: `%LOCALAPPDATA%/BurningLotusBot/human.log`
-    - macOS: `~/Library/Application Support/BurningLotusBot/human.log`
-    - Linux: `~/.config/burninglotusbot/human.log`
-  - If writing there fails, logger falls back to local `./human.log` without stopping the bot.
+  - The whole local `runtime/` tree is ignored in Git, including logs, cache files, debug bundles, and supervisor artifacts.
 - `bot_gui_subprocess.log` - UI subprocess log (if used)
 - `Player.log` default path (auto-detected):
   - macOS: `~/Library/Logs/Wizards Of The Coast/MTGA/Player.log`
   - Windows: `C:/Users/<YourUser>/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`
   - Linux/Proton: `~/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`
 - `runtime/status.json` - shared bot telemetry for the external stuck supervisor
-  - Stored under the same per-user app folder as `bot.log`
+  - Stored in the repo-local `runtime/` folder next to logs/debug/cache artifacts
   - Includes current `mode`, derived `bot_state`, `turn_info`, `last_playerlog_event_at_epoch`, `last_decision_at_epoch`, `last_input_at_epoch`, `intentional_wait_until_epoch`, plus local sand-clock telemetry such as `my_timer_type`, `my_timer_elapsed_sec`, `my_timer_remaining_sec`, `my_timer_critical_count`, and `my_timer_timeout_seen`
   - When the bot is launched under `tools/bot_supervisor.py`, the controller disables its old 3-minute blind `Resolve` spam and reports idle state through this file instead
 - Startup validation now requires an existing `Player.log`:
   - UI startup prompts for manual file selection if auto-detection fails.
   - CLI startup (`run_bot.py`) exits early with a clear error if the file does not exist.
-- Windows fork preset: `calibration_config.json` keeps `log_path` at `C:/Users/giaco/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`.
+- Windows fork preset: `runtime/config/calibration_config.json` keeps `log_path` at `C:/Users/giaco/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`.
 - Hover logs are suppressed by default and only enabled during selection scans.
 - A one-line match summary is logged at match completion.
 - Startup diagnostics now include:
@@ -463,7 +350,7 @@ python -m unittest tests/test_licensing.py
   - Opponent avatar targeting now first rebases legacy absolute coordinates via the calibrated `queue_button` anchor (reconstruct old window origin, then map to current arena), which matches the same relative-conversion principle used for other controls.
   - Logout fallback clicks (`LOG_OUT_BTN`, `LOG_OUT_OK_BTN`) now prefer mapping from a runtime `Play`-button template origin (detected before `ESC`), then fall back to queue-anchor/arena mapping.
   - Account-switch logout now uses a built-in mapped sequence (independent from recorded-action replay): two short focus clicks, one `ESC`, mapped `LOG_OUT_BTN`, then mapped `LOG_OUT_OK_BTN` with tuned delays.
-  - If a `Logout` record exists, its first click (`log_out_focus`) and last two clicks (`log_out_btn`, `log_out_ok_btn`) are seeded once as baseline logout coordinates (and written to `calibration_config.json`), then normal mapped clicking is used afterward.
+  - If a `Logout` record exists, its first click (`log_out_focus`) and last two clicks (`log_out_btn`, `log_out_ok_btn`) are seeded once as baseline logout coordinates (and written to `runtime/config/calibration_config.json`), then normal mapped clicking is used afterward.
   - Seeded logout clicks from recorded actions are converted into 1920-relative window coordinates (using legacy `queue_button` origin reconstruction when needed) before runtime mapping.
   - For logout targets, 1920-relative values are mapped directly to current `arena_region`; queue-anchor rebase is only used for true legacy absolute targets to avoid mixed-space drift.
   - Fixed init-order bug: loaded/seeded logout coordinates are no longer overwritten by hardcoded defaults later in `Controller` startup.
@@ -471,17 +358,17 @@ python -m unittest tests/test_licensing.py
   - Hand scan points (`hand_scan_p1/p2`) are treated as direct 1920-space targets; if loaded values are outside 1920x1080 they are replaced with 1920 defaults before runtime mapping.
   - Bottom-right actions (`RESOLVE` / `SUBMIT_SELECTION` / `ATTACK_ALL`) and `ASSIGN_DAMAGE_DONE` now also use mapped coordinates instead of fixed desktop absolute points.
   - `KEEP_HAND` uses only the configured keep-hand coordinate and maps it relative to detected `arena_region` (no template matching).
-  - After each mulligan click, a keep-click debug bundle is saved under `debug/keep-click-<timestamp>/` with:
+  - After each mulligan click, a keep-click debug bundle is saved under `runtime/debug/keep-click-<timestamp>/` with:
     - `keep_click_state.json` (raw/mapped points, source, arena region, correction, state)
     - `full_screen_after_click.png`
     - `arena_region_after_click.png` (if arena window was detected)
     - `click_focus_after_click.png` (crop around clicked position)
-  - During account-switch fallback logout, each logout click saves a debug bundle under `debug/logout-click-<timestamp>/` with:
+  - During account-switch fallback logout, each logout click saves a debug bundle under `runtime/debug/logout-click-<timestamp>/` with:
     - `logout_click_state.json` (raw/mapped points, source, arena region, state)
     - `full_screen_after_click.png`
     - `arena_region_after_click.png` (if arena window was detected)
     - `logout_focus_after_click.png` (crop around clicked position)
-  - When `SelectN` / discard hand scanning stalls, the controller saves a debug bundle under `debug/hand-select-<timestamp>/` with:
+  - When `SelectN` / discard hand scanning stalls, the controller saves a debug bundle under `runtime/debug/hand-select-<timestamp>/` with:
     - `hand_select_state.json` (card id, scan bounds, current hover/cursor, arena regions, pending SelectN state)
     - `log_tail.txt`
     - `full_screen.png`
@@ -493,9 +380,7 @@ python -m unittest tests/test_licensing.py
 
 When post-login navigation verification repeatedly fails, the bot saves a debug bundle in:
 
-- Windows: `%LOCALAPPDATA%/BurningLotusBot/debug/<timestamp>/`
-- macOS: `~/Library/Application Support/BurningLotusBot/debug/<timestamp>/`
-- Linux: `~/.config/burninglotusbot/debug/<timestamp>/`
+- `runtime/debug/<timestamp>/`
 
 Bundle contents:
 
@@ -521,7 +406,7 @@ python tools/bot_supervisor.py --stop-after-incident
 Default behavior:
 
 - Starts `python tools/run_bot_ui_path.py` as a child process with `MTGA_SUPERVISOR_ACTIVE=1`
-- That child uses the same runtime inputs as the UI Start button: `ConfigManager`, configured click targets, configured screen bounds, configured input backend, account-switch settings, license validation, and the Arena setup preflight
+- That child uses the same runtime inputs as the UI Start button: `ConfigManager`, configured click targets, configured screen bounds, configured input backend, account-switch settings, and the Arena setup preflight
 - If the bot is attached into an already-running match or priority window, `Game` now infers `game_started` from the live gameplay state instead of waiting forever for a mulligan callback that will never come on that attach path
 - Ignores stale `runtime/status.json` for a short startup grace window and waits until the status belongs to the newly spawned child PID before it starts classifying incidents
 - Watches `runtime/status.json` for real activity instead of only file mtimes
@@ -530,7 +415,7 @@ Default behavior:
 - Treats the bot as stuck immediately when the local player's first `MY_TIMER_CRITICAL` sand-clock event happens in the same match
 - Treats the bot as stuck when the local player's `TimerType_Inactivity` is running but the bot has made no decision/input for 20 seconds, even if Arena never emits a late `MY_TIMER_CRITICAL`
 - Treats a local timeout loss (`ResultReason_Timeout`) as an incident too, so a post-timeout match that fails to return home still triggers recovery and Codex notification
-- Writes an incident bundle under `%LOCALAPPDATA%/BurningLotusBot/debug/incident-<timestamp>/`
+- Writes an incident bundle under `runtime/debug/incident-<timestamp>/`
 - Stops the child bot, and for own sand-clock incidents first tries `ESC -> Concede -> optional OK confirm` to leave the match cleanly, then verifies `HOME` via `home_anchor.png`, then always attempts the Codex `stuck` desktop notification from that `HOME` state before restarting the bot
   - Late `TimerStateMessage` updates can omit `elapsedSec` / `remainingSec`; the controller now preserves the last known local inactivity-timer values instead of overwriting them with `null`, so the supervisor's rope-stall trigger still fires
   - Legitimate controller wait phases now publish short `intentional_wait` windows too: pending-message, target-selection, pay-costs, and delayed own-priority decision scheduling no longer look like rope-stalls to the supervisor while the bot is intentionally waiting to act
@@ -539,7 +424,7 @@ Default behavior:
   - The local `GameState` now merges keyed diff lists cumulatively instead of replacing them wholesale, so partial Arena updates no longer erase earlier battlefield/hand/stack objects that later `SelectNReq` and combat handlers still need to resolve valid ids
   - The in-game `Concede` step now searches `Buttons/concede.png` across the full detected arena first and logs the match score, then retries inside the focused ROI around the calibrated/UI target, and only then falls back to the calibrated coordinate itself
 - `Assign Damage Done` now keeps and reuses the first matched `assign_damage_done.png` point for repeated low-level clicks; if the saved `assign_damage_done` calibration is outside a plausible lower-center done-button band, the controller now skips that stale coordinate instead of clicking the wrong UI element
-  - The supervisor now reads its default `Concede` fallback from `calibration_config.json` only when that saved point is already a valid 1920-relative in-window target; otherwise it uses the same `1286,611` default as the UI path instead of the older mismatched hardcoded fallback
+  - The supervisor now reads its default `Concede` fallback from `runtime/config/calibration_config.json` only when that saved point is already a valid 1920-relative in-window target; otherwise it uses the same `1286,611` default as the UI path instead of the older mismatched hardcoded fallback
   - The in-game `Concede` recovery now retries `ESC` up to three times, captures per-attempt debug screenshots, and only clicks a real `Buttons/concede.png` template match; it no longer sends a blind fallback click when the options menu never became visible
   - Every failed or ambiguous in-game `Concede` attempt now writes targeted debug artifacts into the incident bundle (`concede_debug_after_escape_*`, `concede_debug_template_not_found_*`, `concede_debug_post_concede_wait_*`) so the ESC menu and button region can be inspected directly
   - If anchor-based arena reacquire fails during an in-game recovery, the supervisor now still uses the detected MTGA client window region and does not skip the `Concede` attempt just because no known UI anchor matched
@@ -605,12 +490,12 @@ Optional flags:
 - `--mtga-process-names "MTGA.exe,MTGALauncher.exe"`
   - Override the Windows process names used for the optional hard client restart
 - `--concede-rel-x 962 --concede-rel-y 631`
-  - Override the 1920-relative in-game `Concede` button position used after `ESC` opens the options menu; by default the supervisor only trusts a saved `calibration_config.json` `concede` point when it is already a valid 1920-relative target, otherwise it falls back to `962,631`
+  - Override the 1920-relative in-game `Concede` button position used after `ESC` opens the options menu; by default the supervisor only trusts a saved `runtime/config/calibration_config.json` `concede` point when it is already a valid 1920-relative target, otherwise it falls back to `962,631`
 
 Codex notification behavior:
 
 - Always attempted after successful recovery back to `HOME`
-- Searches the whole screen for `codex_window.png`, clicks it, types `stuck`, presses Enter
+- Searches the whole screen for `supervisor/codex_window.png`, clicks it, types `stuck`, presses Enter
 - Result is written to `codex_notify.json`
 - The notifier now also saves `codex_notify_before.png` / `codex_notify_after.png` into the incident bundle and uses a double-click plus delayed double-Enter retry, because the Codex desktop field can look focused while the first Enter is still swallowed
 - This remains a best-effort desktop macro, not a guaranteed control channel; it only works if the Codex chat input is visible and still matches the template
@@ -621,7 +506,7 @@ Standalone notifier test:
 python tools/test_codex_notify.py
 ```
 
-- Uses `codex_window.png` by default
+- Uses `supervisor/codex_window.png` by default
 - Prints the notifier result as JSON
 - Exits with code `0` on success and `1` if the Codex input template was not found or the desktop macro failed
 
@@ -638,9 +523,9 @@ python tools/run_bot_ui_path.py
 
 Incident notes:
 
-- Real supervisor incidents are summarized in `incidents.md`
+- Real supervisor incidents are summarized in `supervisor/incidents.md`
 - Each entry now records the incident folder/timestamp, a signature/cluster key, trigger, whether recovery / Codex notify succeeded, the actual bot-side root cause, the fix or next debug step, and a tracking block instead of a binary "fixed" claim
-- Each supervisor incident bundle now also gets a machine-readable `tracking.json`, and repo-wide signature state lives in `incident_registry.json`
+- Each supervisor incident bundle now also gets a machine-readable `tracking.json`, and repo-wide signature state lives in `runtime/incident_registry.json`
 - `tracking.json` now includes a `suggested_signature` plus `signature_basis`, generated from trigger, intentional wait reason, turn phase/step, and dominant log patterns in `bot_tail.txt` / `player_tail.txt`
 - Tracking status is evidence-based:
   - `proposed`: Codex has a plausible diagnosis / fix, but it is not merged yet
@@ -658,7 +543,7 @@ Incident notes:
   - Did the bot now progress through similar UI/log states?
   - Did time-to-next-same-incident improve?
   - Did the frequency of that signature decline over many runs?
-- Older entries in `incidents.md` remain legacy narrative notes; new entries should use the tracking block going forward
+- Older entries in `supervisor/incidents.md` remain legacy narrative notes; new entries should use the tracking block going forward
 - The suggested signature is only a clustering hint:
   - confirm it if it matches the actual diagnosis
   - override it if two incidents only look similar on the surface

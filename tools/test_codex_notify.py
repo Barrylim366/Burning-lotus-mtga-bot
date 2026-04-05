@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Test only the Codex stuck notifier.")
     parser.add_argument(
         "--template",
-        default=str(ROOT_DIR / "codex_window.png"),
+        default=str(ROOT_DIR / "supervisor" / "codex_window.png"),
         help="Path to the Codex chat input template image.",
     )
     parser.add_argument(

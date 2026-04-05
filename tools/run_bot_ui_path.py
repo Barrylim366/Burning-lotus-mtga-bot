@@ -12,17 +12,11 @@ import bot_logger
 from AI.DummyAI import DummyAI
 from Controller.MTGAController.Controller import Controller
 from Game import Game
-from licensing.validator import require_license_or_block
 from ui import ConfigManager, _app_path
 from vision.window_locator import run_arena_setup_check
 
 
 def main() -> int:
-    license_result = require_license_or_block()
-    if not license_result.valid:
-        print(f"License check failed [{license_result.code}]: {license_result.message}")
-        return 1
-
     config_manager = ConfigManager()
     result = run_arena_setup_check(
         assets_dir=_app_path("assets", "assert"),
