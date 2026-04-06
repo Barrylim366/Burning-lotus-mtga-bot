@@ -25,4 +25,15 @@ Accounts/*
 !Buttons/.gitkeep
 !Accounts/.gitkeep
 
+# IDE and local tooling
+.idea/
+.claude/
+
+# Internal AI/session files
+learning.md
+CLAUDE.md
+AGENTS.md
+supervisor/incidents.md
+supervisor/codex_window.png
+
 
