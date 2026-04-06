@@ -280,6 +280,7 @@ class Controller(ControllerSecondary):
         self.__emergency_concede_in_progress = False
         self.__emergency_concede_threshold_sec = 20.0
         self.__emergency_concede_timer: threading.Timer | None = None
+        self.__emergency_concede_scheduled_at: float = 0.0
         self._account_switch_interval = max(0, int(account_switch_minutes or 0)) * 60
         self._account_cycle_index = int(account_cycle_index or 0)
         self._account_play_order = account_play_order or []
@@ -2595,10 +2596,18 @@ class Controller(ControllerSecondary):
             bot_logger.log_info(f"SubmitSelection skipped (not active). reason={reason}")
             return False
         submit_img = os.path.join(self._buttons_dir(), "submit_btn.png")
+        okay_img = os.path.join(self._buttons_dir(), "okay_btn.png")
         if os.path.exists(submit_img):
             if self._click_image(submit_img, "SUBMIT_SELECTION_IMG", confidence=0.82, timeout=1.5):
                 self.__last_submit_selection_ts = time.time()
                 return True
+            # submit_btn not on screen — try okay_btn as fallback (e.g. combat confirm)
+            if os.path.exists(okay_img):
+                if self._click_image(okay_img, "SUBMIT_OKAY_FALLBACK_IMG", confidence=0.82, timeout=1.5):
+                    bot_logger.log_info("SUBMIT_SELECTION: submit_btn not found, clicked okay_btn as fallback")
+                    self.__last_submit_selection_ts = time.time()
+                    return True
+            return False
         target, source = self._map_abs_point_to_arena(
             self.main_br_button_coordinates,
             label="SUBMIT_SELECTION",
@@ -2992,6 +3001,7 @@ class Controller(ControllerSecondary):
             f"EMERGENCY_CONCEDE_SCHEDULED: timerId={timer_id} remaining={remaining_sec:.1f}s "
             f"will fire in {delay:.1f}s (at ~{self.__emergency_concede_threshold_sec:.0f}s left)"
         )
+        self.__emergency_concede_scheduled_at = time.time()
         self.__emergency_concede_timer = threading.Timer(delay, self.__attempt_emergency_concede)
         self.__emergency_concede_timer.daemon = True
         self.__emergency_concede_timer.start()
@@ -3008,12 +3018,21 @@ class Controller(ControllerSecondary):
         self.__emergency_concede_timer = None
         if self._stop_requested:
             return
-        # Don't race with an active decision/input: if bot recently acted, defer briefly and retry.
+        # Cancel if bot was active at any point after the concede was scheduled — it's clearly not stuck.
+        # Only fire if the bot has been continuously idle since scheduling.
         try:
             status = runtime_status.read_status()
             last_decision = float(status.get("last_decision_at_epoch") or 0.0)
             last_input = float(status.get("last_input_at_epoch") or 0.0)
-            idle_secs = time.time() - max(last_decision, last_input)
+            last_activity = max(last_decision, last_input)
+            idle_secs = time.time() - last_activity
+            if last_activity > self.__emergency_concede_scheduled_at and idle_secs < 15.0:
+                # Bot acted after the concede was scheduled AND is still recently active → alive and playing.
+                bot_logger.log_info(
+                    f"EMERGENCY_CONCEDE: cancelled — bot was active after scheduling "
+                    f"(activity {idle_secs:.1f}s ago, idle={idle_secs:.1f}s)"
+                )
+                return
             if idle_secs < 8.0:
                 bot_logger.log_info(
                     f"EMERGENCY_CONCEDE: deferred — bot recently active (idle={idle_secs:.1f}s), retrying in 5s"
@@ -3045,13 +3064,55 @@ class Controller(ControllerSecondary):
                 return
             bot_logger.log_info(f"EMERGENCY_CONCEDE: clicking concede at {target} (source={source})")
             runtime_status.touch_input("EMERGENCY_CONCEDE", target)
-            self.input.move_abs(target[0], target[1])
-            time.sleep(0.1)
-            self.input.left_click(1)
+            self.__click_concede_and_confirm(target, label="EMERGENCY_CONCEDE")
         except Exception as exc:
             bot_logger.log_error(f"EMERGENCY_CONCEDE: exception: {exc}")
         finally:
             self.__emergency_concede_in_progress = False
+
+    def __force_concede(self) -> None:
+        """Unconditional concede — called when ActivePlayer timer expires. No idle guard."""
+        if self._stop_requested:
+            return
+        try:
+            bot_logger.log_info("FORCE_CONCEDE: starting ESC+concede sequence (ActivePlayer timer expired)")
+            runtime_status.set_mode("stuck_suspected", bot_state=str(self._get_state_from_log()))
+            if focus_mtga_window():
+                time.sleep(0.3)
+            self.input.tap_escape()
+            time.sleep(0.8)
+            concede_raw = self._loaded_click_targets.get("concede", {})
+            concede_xy = (int(concede_raw.get("x", 962)), int(concede_raw.get("y", 631)))
+            target, source = self._map_abs_point_to_arena(
+                concede_xy,
+                label="FORCE_CONCEDE_BTN",
+                force_reacquire=True,
+                apply_correction=False,
+            )
+            if source == "absolute_no_arena":
+                bot_logger.log_error("FORCE_CONCEDE: arena_region unavailable, skipping click")
+                return
+            bot_logger.log_info(f"FORCE_CONCEDE: clicking concede at {target} (source={source})")
+            runtime_status.touch_input("FORCE_CONCEDE", target)
+            self.__click_concede_and_confirm(target, label="FORCE_CONCEDE")
+        except Exception as exc:
+            bot_logger.log_error(f"FORCE_CONCEDE: exception: {exc}")
+
+    def __click_concede_and_confirm(self, concede_target: tuple, label: str) -> None:
+        """Click the Concede button then click the OK confirmation dialog."""
+        self.input.move_abs(concede_target[0], concede_target[1])
+        time.sleep(0.1)
+        self.input.left_click(1)
+        time.sleep(1.5)
+        # Click OK/confirm dialog — appears roughly at arena center+offset
+        arena = self._arena_region
+        if arena is not None:
+            ok_x = int(arena[0] + 960)
+            ok_y = int(arena[1] + 540)
+            bot_logger.log_info(f"{label}: clicking confirm OK at ({ok_x}, {ok_y})")
+            self.input.move_abs(ok_x, ok_y)
+            time.sleep(0.1)
+            self.input.left_click(1)
 
     def dismiss_end_screen(self):
         """Click to dismiss match end screen and return to main menu"""
@@ -4723,6 +4784,18 @@ class Controller(ControllerSecondary):
                     duration_sec = float(prev_duration)
                 except Exception:
                     pass
+            # If the same timer ID was reused (elapsed reset significantly), treat as a fresh start.
+            if (
+                running
+                and was_running
+                and elapsed_sec is not None
+                and prev_elapsed is not None
+                and elapsed_sec < 5.0
+                and prev_elapsed > 10.0
+            ):
+                was_running = False
+                warned = False
+                critical = False
             if running:
                 current_running.add(timer_id)
                 if not was_running:
@@ -4767,6 +4840,10 @@ class Controller(ControllerSecondary):
                             my_timer_remaining_sec=remaining_sec,
                             my_timer_last_critical_at_epoch=time.time(),
                         )
+                    if timer_type == "TimerType_ActivePlayer" and not self._stop_requested:
+                        bot_logger.log_info("MY_TIMER_CRITICAL: ActivePlayer timer expired — forcing immediate concede")
+                        t = threading.Thread(target=self.__force_concede, daemon=True)
+                        t.start()
                     critical = True
                 if remaining_sec is not None and remaining_sec > 5.0:
                     critical = False
