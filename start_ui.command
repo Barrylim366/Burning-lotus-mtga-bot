@@ -5,6 +5,8 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$REPO_DIR/.venv-macos"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_PYTHON="$VENV_DIR/bin/python"
+REQ_FILE="$REPO_DIR/requirements.txt"
+MARKER="$VENV_DIR/.requirements.installed"
 
 alert_warning() {
   local msg="$1"
@@ -13,7 +15,7 @@ alert_warning() {
 }
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  alert_warning "Python 3 nicht gefunden. Bitte Python 3 installieren."
+  alert_warning "Python 3 nicht gefunden. Bitte Python 3.10 oder neuer installieren: https://www.python.org/downloads/"
   exit 1
 fi
 
@@ -29,15 +31,16 @@ if [ ! -x "$VENV_PYTHON" ]; then
   exit 1
 fi
 
-if ! "$VENV_PYTHON" -m pip show pynput pyautogui opencv-python pillow cryptography >/dev/null 2>&1; then
+if [ ! -f "$MARKER" ] || [ "$REQ_FILE" -nt "$MARKER" ]; then
   "$VENV_PYTHON" -m pip install --upgrade pip || {
     alert_warning "Konnte pip in .venv-macos nicht aktualisieren."
     exit 1
   }
-  "$VENV_PYTHON" -m pip install pynput pyautogui opencv-python pillow cryptography || {
+  "$VENV_PYTHON" -m pip install -r "$REQ_FILE" || {
     alert_warning "Konnte erforderliche Pakete nicht installieren."
     exit 1
   }
+  touch "$MARKER"
 fi
 
 cd "$REPO_DIR"
