@@ -1,0 +1,7 @@
+# Shell scripts must keep LF line endings so bash accepts the shebang.
+*.sh      text eol=lf
+*.command text eol=lf
+
+# Windows scripts stick with CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
