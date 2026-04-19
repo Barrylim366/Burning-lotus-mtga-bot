@@ -5,46 +5,77 @@ Automated MTGA bot with UI, calibration, account switching, and quest-based deck
 
 ## Requirements
 
-- macOS 12+, Windows 10/11 or Linux (tested on Debian and CachyOS so far)
+- **OS**: Windows 10/11, macOS 12+, or Linux (X11 or Wayland; tested on Debian and CachyOS)
 - Python 3.10+
-- MTG Arena installed (Steam)
-- Python packages:
-  - pyautogui
-  - opencv-python (needed for image matching confidence)
-  - pillow
-  - pynput
+- MTG Arena installed (Windows: Steam / Wizards installer. macOS: Crossover or compatible. Linux: Wine/Proton via Steam or Lutris.)
+- Python packages are installed automatically by the launcher scripts; the raw list lives in `requirements.txt` (`pyautogui`, `pynput`, `numpy`, `Pillow`, `opencv-python`, `mss`).
+
+MTGA in-game settings (required for all platforms):
+
+- Language: **English**
+- Display mode: **Windowed**
+- Resolution: **1920x1080**
+- OS display scaling: **100%**
 
 Input backend:
+
 - Default is `auto`.
 - On macOS, `auto` prefers `pyautogui` (more stable than global `pynput` hooks).
 - Optional override via env: `MTGA_BOT_INPUT_BACKEND=auto|pyautogui|pynput|ydotool`.
-- On macOS you must allow input control:
-  - `System Settings -> Privacy & Security -> Accessibility`:
-    enable your terminal app (Terminal/iTerm) and the Python executable used for the bot.
-  - If image matching is used, also enable `Screen Recording` for the same app(s).
-
-Install packages:
-
-```
-pip install pyautogui opencv-python pillow pynput
-```
 
 ## Quick Start
 
-1) Start the UI:
+The fastest path on each platform is the provided one-click launcher. It creates a local virtual environment, installs the Python packages from `requirements.txt`, and starts the UI.
+
+### Windows
+
+1. Install Python 3.10+ from python.org (tick "Add python.exe to PATH").
+2. Double-click `start_ui.bat`.
+
+The script creates `.venv` and installs dependencies on first run.
+
+### macOS
+
+1. Install Python 3.10+ (from python.org or `brew install python@3.12`).
+2. Double-click `start_ui.command` (or run `./start_ui.command` in Terminal).
+3. macOS permission prompts — grant both to the **Terminal** app you launched from **and** to the Python binary inside `.venv-macos`:
+   - `System Settings -> Privacy & Security -> Accessibility` (input control)
+   - `System Settings -> Privacy & Security -> Screen Recording` (image matching)
+
+### Linux
+
+1. Install Python 3.10+ plus a few OS-level packages (the launcher warns if any are missing and prints the exact command for your distro):
+
+   | Purpose | Arch / CachyOS | Debian / Ubuntu | Fedora | openSUSE |
+   |---|---|---|---|---|
+   | tkinter UI | `tk` | `python3-tk` | `python3-tkinter` | `python3-tk` |
+   | MTGA window detection | `xorg-xwininfo` | `x11-utils` | `xorg-x11-utils` | `xwininfo` |
+   | Screenshot (KDE) | `spectacle` | `kde-spectacle` | `spectacle` | `spectacle` |
+   | Screenshot (GNOME) | `gnome-screenshot` | `gnome-screenshot` | `gnome-screenshot` | `gnome-screenshot` |
+   | Screenshot (wlroots/Sway/Hyprland) | `grim` | `grim` | `grim` | `grim` |
+   | Screenshot (X11 fallback) | `scrot` | `scrot` | `scrot` | `scrot` |
+
+   On KDE/GNOME systems the screenshot tool is usually preinstalled. Install at least one matching your desktop.
+
+2. Run the launcher:
+
+   ```
+   ./start_ui.sh
+   ```
+
+   On first run the script creates `.venv`, installs Python dependencies, and starts the UI.
+
+3. MTGA must run through Wine/Proton (via Steam or Lutris). Under Wayland this goes through XWayland automatically, which is what the detection layer expects.
+
+### Manual start (any platform)
+
+If you prefer to manage the virtual environment yourself:
 
 ```
-python ui.py
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt      # Windows: .venv\Scripts\pip
+.venv/bin/python ui.py                          # Windows: .venv\Scripts\python ui.py
 ```
-
-macOS one-click start:
-
-```
-./start_ui.command
-```
-
-You can also double-click `start_ui.command` in Finder.
-The script creates `.venv-macos` automatically (if missing) and installs required packages on first run.
 
 Windows quick test for built-in account switch flow (without starting a full match loop manually):
 - Double-click `test_logout_record.bat` in the repo root.
@@ -164,7 +195,9 @@ The bot now runs in an out-of-the-box mode using:
 The runtime tries to locate MTGA dynamically:
 
 - First via OS window rectangle detection
-- On Windows, the setup check now uses the MTGA client area from Win32 instead of border-offset heuristics
+  - Windows: Win32 client rectangle (no border-offset heuristics)
+  - Linux: `xwininfo -tree -root` (works on X11 and XWayland / Wayland via Wine or Proton)
+  - macOS and fallback: full-screen anchor template search
 - Then verifies/fallbacks with visual anchor checks
 - Stores a session `arena_region` and re-acquires it on repeated verification failures
 - During combat, if live re-acquire fails briefly, the controller now reuses the last known good `arena_region` instead of sending blind desktop clicks
@@ -206,7 +239,8 @@ The runtime tries to locate MTGA dynamically:
   - Subwindow minimum sizes are now derived from actual visible content bounds to avoid clipping without forcing oversized windows.
 
 5) Start Bot.
-   - Before the bot starts, the app checks that MTGA is visible with an exact windowed `1920x1080` client area and that Windows display scaling is `100%`.
+   - Before the bot starts, the app checks that MTGA is visible with an exact windowed `1920x1080` client area and that OS display scaling is `100%`.
+   - On Linux, detection uses `xwininfo` (X11/XWayland) plus anchor verification. On Windows, it uses the Win32 client rectangle. On macOS, detection falls back to anchor-based full-screen search.
    - If that check fails, the app writes an Arena setup debug bundle with diagnostics and screenshots.
 
 Stop bot any time with **Mouse Wheel**.

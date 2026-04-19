@@ -11,6 +11,11 @@ from typing import Any
 import bot_logger
 from vision.vision import VisionEngine
 
+try:
+    import cv2
+except Exception:  # pragma: no cover
+    cv2 = None
+
 if os.name == "nt":
     import ctypes
     from ctypes import wintypes
@@ -189,21 +194,383 @@ class ArenaRegionProvider:
             diagnostics=diagnostics,
         )
 
-    def _detect_generic(self) -> ArenaDetectionResult:
-        rect = self._find_mtga_window_rect()
-        if rect is not None:
+    def _detect_linux_via_x11(self) -> ArenaDetectionResult | None:
+        diagnostics: dict[str, Any] = {"platform": "linux", "method": "xwininfo"}
+        import shutil
+        import subprocess
+        import re
+
+        xwininfo = shutil.which("xwininfo")
+        if xwininfo is None:
+            diagnostics["error"] = "xwininfo_not_installed"
             return ArenaDetectionResult(
-                ok=True,
-                region=(rect.x, rect.y, rect.w, rect.h),
-                code="ok",
-                message="MTGA window detected.",
+                ok=False,
+                region=None,
+                code="x11_tool_missing",
+                message="xwininfo not installed.",
+                diagnostics=diagnostics,
             )
+
+        try:
+            proc = subprocess.run(
+                [xwininfo, "-tree", "-root"],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+        except Exception as exc:
+            diagnostics["error"] = f"xwininfo_failed: {exc}"
+            return ArenaDetectionResult(
+                ok=False,
+                region=None,
+                code="x11_probe_failed",
+                message=f"xwininfo failed: {exc}",
+                diagnostics=diagnostics,
+            )
+
+        if proc.returncode != 0:
+            diagnostics["error"] = "xwininfo_nonzero_exit"
+            diagnostics["stderr"] = (proc.stderr or "").strip()[:400]
+            return ArenaDetectionResult(
+                ok=False,
+                region=None,
+                code="x11_probe_failed",
+                message="xwininfo could not enumerate windows (no X11/XWayland display?).",
+                diagnostics=diagnostics,
+            )
+
+        text = proc.stdout or ""
+        pattern = re.compile(
+            r'^\s*(0x[0-9a-fA-F]+)\s+"([^"]*)":\s*\([^)]*\)\s+'
+            r'(\d+)x(\d+)\+(-?\d+)\+(-?\d+)\s+\+(-?\d+)\+(-?\d+)',
+            re.MULTILINE,
+        )
+
+        candidates: list[dict[str, Any]] = []
+        for match in pattern.finditer(text):
+            wid, title, w, h, _rx, _ry, ax, ay = match.groups()
+            low = title.lower()
+            if "mtga" not in low and "magic: the gathering arena" not in low and "magic the gathering arena" not in low:
+                continue
+            candidates.append({
+                "id": wid,
+                "title": title,
+                "rect": WindowRect(x=int(ax), y=int(ay), w=int(w), h=int(h)),
+            })
+        diagnostics["candidate_windows"] = [
+            {"id": c["id"], "title": c["title"], "rect": _rect_to_dict(c["rect"])}
+            for c in candidates
+        ]
+
+        if not candidates:
+            return ArenaDetectionResult(
+                ok=False,
+                region=None,
+                code="window_not_found",
+                message="MTGA window not found via X11. Make sure MTGA is running and visible.",
+                diagnostics=diagnostics,
+            )
+
+        ew, eh = int(self._expected_size[0]), int(self._expected_size[1])
+
+        def _score(item: dict[str, Any]) -> tuple[float, float]:
+            title_l = str(item["title"]).lower()
+            rect: WindowRect = item["rect"]
+            bonus = 0.0
+            if "magic: the gathering arena" in title_l:
+                bonus += 20.0
+            elif "magic the gathering arena" in title_l:
+                bonus += 18.0
+            elif "mtga" in title_l:
+                bonus += 12.0
+            penalty = abs(rect.w - ew) + abs(rect.h - eh)
+            return (bonus - penalty / 50.0, -float(penalty))
+
+        selected = max(candidates, key=_score)
+        rect: WindowRect = selected["rect"]
+        diagnostics["selected_window"] = {
+            "id": selected["id"],
+            "title": selected["title"],
+            "rect": _rect_to_dict(rect),
+        }
+
+        candidate_origins: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for dy in (0, 30, 24, 36, 28, 22, 40, 48):
+            for dx in (0, 1, -1, 4, -4, 8, -8):
+                origin = (rect.x + dx, rect.y + dy)
+                if origin in seen:
+                    continue
+                seen.add(origin)
+                candidate_origins.append(origin)
+
+        verify_checks: list[dict[str, Any]] = []
+        for ox, oy in candidate_origins:
+            if ox < 0 or oy < 0:
+                continue
+            region = (int(ox), int(oy), ew, eh)
+            matched_anchor, checks = self._verify_region_with_any_anchor(region)
+            verify_checks.append({"origin": [int(ox), int(oy)], "matched_anchor": matched_anchor})
+            if matched_anchor is not None:
+                diagnostics["verification"] = verify_checks
+                return ArenaDetectionResult(
+                    ok=True,
+                    region=region,
+                    code="ok",
+                    message="MTGA window detected via X11.",
+                    matched_anchor=matched_anchor,
+                    diagnostics=diagnostics,
+                )
+
+        diagnostics["verification"] = verify_checks
+
+        fallback_region = (int(rect.x), int(rect.y), ew, eh)
+        if abs(rect.w - ew) > 32 or abs(rect.h - eh) > 64:
+            return ArenaDetectionResult(
+                ok=False,
+                region=fallback_region,
+                code="window_wrong_size",
+                message=(
+                    f"MTGA window found at {rect.w}x{rect.h}. "
+                    f"Set Arena to windowed {ew}x{eh}."
+                ),
+                diagnostics=diagnostics,
+            )
+
         return ArenaDetectionResult(
             ok=False,
-            region=None,
-            code="window_not_found",
-            message="MTGA window not found.",
+            region=fallback_region,
+            code="anchor_not_found",
+            message=(
+                "MTGA window found via X11 but no known UI anchor matched. "
+                "Open a supported Arena screen (Home, Play, Decks, Store, Options, or in-game) and try again."
+            ),
+            diagnostics=diagnostics,
         )
+
+    def _detect_generic(self) -> ArenaDetectionResult:
+        platform_name = "macos" if sys.platform == "darwin" else "linux"
+
+        if sys.platform.startswith("linux"):
+            x11_result = self._detect_linux_via_x11()
+            if x11_result is not None and x11_result.ok:
+                return x11_result
+            x11_diagnostics = x11_result.diagnostics if x11_result is not None else None
+        else:
+            x11_diagnostics = None
+
+        diagnostics: dict[str, Any] = {
+            "platform": platform_name,
+            "expected_size": {"width": int(self._expected_size[0]), "height": int(self._expected_size[1])},
+        }
+        if x11_diagnostics:
+            diagnostics["x11_probe"] = x11_diagnostics
+
+        self._vision.begin_tick()
+        frame = self._vision.capture(None)
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return ArenaDetectionResult(
+                ok=False,
+                region=None,
+                code="screen_capture_failed",
+                message=(
+                    "Could not capture the screen. Install a screenshot backend "
+                    "(on Linux: `sudo pacman -S scrot` or `sudo apt install scrot`; "
+                    "Wayland sessions may additionally require `gnome-screenshot` "
+                    "or running the UI via XWayland)."
+                ),
+                diagnostics=diagnostics,
+            )
+
+        fh, fw = frame.shape[:2]
+        ew, eh = int(self._expected_size[0]), int(self._expected_size[1])
+        diagnostics["screen_size"] = {"width": int(fw), "height": int(fh)}
+
+        if fw < ew or fh < eh:
+            return ArenaDetectionResult(
+                ok=False,
+                region=None,
+                code="screen_too_small",
+                message=(
+                    f"Captured screen is {fw}x{fh}, which is smaller than the required "
+                    f"{ew}x{eh} MTGA window. Set your display resolution to at least "
+                    f"{ew}x{eh} and run MTGA in a windowed {ew}x{eh} mode."
+                ),
+                diagnostics=diagnostics,
+            )
+
+        seed_matches: list[dict[str, Any]] = []
+        anchor_scan: list[dict[str, Any]] = []
+        for spec in _ANCHOR_SPECS:
+            template_path = os.path.join(self._assets_dir, str(spec["name"]))
+            if not os.path.exists(template_path):
+                anchor_scan.append({"anchor": spec["name"], "status": "missing_file"})
+                continue
+
+            template_size = _read_template_size(template_path)
+            if template_size is None:
+                anchor_scan.append({"anchor": spec["name"], "status": "template_unreadable"})
+                continue
+            th_, tw_ = template_size
+
+            threshold = float(spec["threshold"])
+            match = self._vision.find_template(frame, template_path, threshold=threshold)
+            if match is None:
+                anchor_scan.append({
+                    "anchor": spec["name"],
+                    "status": "not_found_on_screen",
+                    "threshold": threshold,
+                })
+                continue
+
+            mx = int(match.x) - (tw_ // 2)
+            my = int(match.y) - (th_ // 2)
+            seed_matches.append({
+                "name": str(spec["name"]),
+                "roi": tuple(int(v) for v in spec["roi"]),
+                "tw": int(tw_),
+                "th": int(th_),
+                "screen_tl": (int(mx), int(my)),
+                "score": float(match.score),
+            })
+            anchor_scan.append({
+                "anchor": spec["name"],
+                "status": "found_on_screen",
+                "screen_tl": [int(mx), int(my)],
+                "score": float(match.score),
+            })
+
+        diagnostics["anchor_scan"] = anchor_scan
+
+        if not seed_matches:
+            return ArenaDetectionResult(
+                ok=False,
+                region=None,
+                code="window_not_found",
+                message=(
+                    "MTGA window not found. Make sure MTGA is visible, runs in a windowed "
+                    f"{ew}x{eh} client area, and that your display scaling is set to 100%."
+                ),
+                diagnostics=diagnostics,
+            )
+
+        origin = self._solve_origin_from_seeds(seed_matches, frame_size=(fw, fh))
+        if origin is None:
+            return ArenaDetectionResult(
+                ok=False,
+                region=None,
+                code="anchor_not_found",
+                message=(
+                    "Arena anchors were visible on screen, but no consistent "
+                    f"{ew}x{eh} window position matched them. "
+                    "Check MTGA is at 1920x1080, undistorted, fully visible, "
+                    "and not covered by overlays."
+                ),
+                diagnostics=diagnostics,
+            )
+
+        region = (int(origin[0]), int(origin[1]), ew, eh)
+        matched_anchor, anchor_checks = self._verify_region_with_any_anchor(region)
+        diagnostics["anchor_checks"] = anchor_checks
+        diagnostics["selected_origin"] = [int(origin[0]), int(origin[1])]
+        if matched_anchor is None:
+            return ArenaDetectionResult(
+                ok=False,
+                region=region,
+                code="anchor_not_found",
+                message=(
+                    "Found a candidate MTGA window position but no known UI anchor could be "
+                    "verified there. Open a supported Arena screen such as Home, Play, Decks, "
+                    "Store, Options, or an in-game board, and try again."
+                ),
+                diagnostics=diagnostics,
+            )
+
+        return ArenaDetectionResult(
+            ok=True,
+            region=region,
+            code="ok",
+            message="MTGA window detected and verified.",
+            matched_anchor=matched_anchor,
+            diagnostics=diagnostics,
+        )
+
+    def _solve_origin_from_seeds(
+        self,
+        seed_matches: list[dict[str, Any]],
+        *,
+        frame_size: tuple[int, int],
+    ) -> tuple[int, int] | None:
+        ew, eh = int(self._expected_size[0]), int(self._expected_size[1])
+        fw, fh = int(frame_size[0]), int(frame_size[1])
+
+        def consistency_score(ox: int, oy: int) -> int:
+            if ox < 0 or oy < 0 or ox + ew > fw or oy + eh > fh:
+                return -1
+            count = 0
+            for s in seed_matches:
+                rx, ry, rw, rh = s["roi"]
+                tw_, th_ = s["tw"], s["th"]
+                mx, my = s["screen_tl"]
+                ax = mx - ox
+                ay = my - oy
+                if rx <= ax <= rx + max(0, rw - tw_) and ry <= ay <= ry + max(0, rh - th_):
+                    count += 1
+            return count
+
+        best_origin: tuple[int, int] | None = None
+        best_score = -1
+
+        seed_matches_sorted = sorted(
+            seed_matches,
+            key=lambda s: (s["roi"][2] - s["tw"]) * (s["roi"][3] - s["th"]),
+        )
+
+        for seed in seed_matches_sorted:
+            rx, ry, rw, rh = seed["roi"]
+            tw_, th_ = seed["tw"], seed["th"]
+            mx, my = seed["screen_tl"]
+
+            ax_min = max(0, int(rx))
+            ax_max = max(ax_min, int(rx) + max(0, int(rw) - int(tw_)))
+            ay_min = max(0, int(ry))
+            ay_max = max(ay_min, int(ry) + max(0, int(rh) - int(th_)))
+
+            coarse_step = 20
+            for ax in range(ax_min, ax_max + 1, coarse_step):
+                for ay in range(ay_min, ay_max + 1, coarse_step):
+                    ox = int(mx) - ax
+                    oy = int(my) - ay
+                    score = consistency_score(ox, oy)
+                    if score > best_score:
+                        best_score = score
+                        best_origin = (ox, oy)
+
+        if best_origin is None or best_score < 1:
+            return None
+
+        fine_step = 2
+        radius = 24
+        refined_origin = best_origin
+        refined_score = best_score
+        for dx in range(-radius, radius + 1, fine_step):
+            for dy in range(-radius, radius + 1, fine_step):
+                ox = best_origin[0] + dx
+                oy = best_origin[1] + dy
+                score = consistency_score(ox, oy)
+                if score > refined_score:
+                    refined_score = score
+                    refined_origin = (ox, oy)
+
+        return refined_origin
+
+    def _find_mtga_window_rect(self) -> WindowRect | None:
+        if os.name == "nt":
+            selected = _pick_best_windows_candidate(_list_mtga_window_rects_windows(), self._expected_size)
+            if selected is not None:
+                return selected["client_rect"]
+        return None
 
     def _verify_rect_with_anchor(self, region: tuple[int, int, int, int]) -> bool:
         matched_anchor, _anchor_checks = self._verify_region_with_any_anchor(region)
@@ -274,13 +641,6 @@ class ArenaRegionProvider:
         origin_x = int(match.x - self._global_anchor_offset[0])
         origin_y = int(match.y - self._global_anchor_offset[1])
         return (origin_x, origin_y, int(self._expected_size[0]), int(self._expected_size[1]))
-
-    def _find_mtga_window_rect(self) -> WindowRect | None:
-        if os.name == "nt":
-            selected = _pick_best_windows_candidate(_list_mtga_window_rects_windows(), self._expected_size)
-            if selected is not None:
-                return selected["client_rect"]
-        return None
 
     def _write_detection_debug_bundle(
         self,
@@ -368,6 +728,19 @@ def _abs_region(base_region: tuple[int, int, int, int], rel_region: tuple[int, i
     w = max(0, min(rw, max(0, bw - max(0, rx))))
     h = max(0, min(rh, max(0, bh - max(0, ry))))
     return (x, y, w, h)
+
+
+def _read_template_size(template_path: str) -> tuple[int, int] | None:
+    if cv2 is None:
+        return None
+    try:
+        image = cv2.imread(template_path, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+    if image is None:
+        return None
+    h, w = image.shape[:2]
+    return int(h), int(w)
 
 
 def _get_windows_display_scaling_percent() -> int | None:

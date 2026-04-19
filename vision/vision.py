@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from dataclasses import dataclass
 
@@ -15,6 +16,11 @@ try:
     import pyautogui
 except Exception:  # pragma: no cover - optional dependency at runtime
     pyautogui = None
+
+try:
+    import mss
+except Exception:  # pragma: no cover - optional dependency at runtime
+    mss = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +40,9 @@ class VisionEngine:
         self._template_cache: dict[str, np.ndarray] = {}
         self._cv2_warned = False
         self._pyautogui_warned = False
+        self._mss_instance = None
+        self._mss_failed = False
+        self._linux_tool_cmd: list[str] | None = None
 
     def begin_tick(self) -> None:
         self._tick_id += 1
@@ -41,14 +50,11 @@ class VisionEngine:
         self._region_cache.clear()
 
     def capture(self, region: tuple[int, int, int, int] | None = None) -> np.ndarray | None:
-        if pyautogui is None:
-            if not self._pyautogui_warned:
-                self._pyautogui_warned = True
-            return None
-
         if self._full_frame_cache is None:
-            shot = pyautogui.screenshot()
-            self._full_frame_cache = cvt_rgb_to_bgr(np.array(shot))
+            frame = self._grab_full_frame()
+            if frame is None:
+                return None
+            self._full_frame_cache = frame
 
         if region is None:
             return self._full_frame_cache
@@ -155,6 +161,99 @@ class VisionEngine:
                 return True
             time.sleep(max(0.05, float(poll_sec)))
         return False
+
+    def _grab_full_frame(self) -> np.ndarray | None:
+        if mss is not None and not self._mss_failed:
+            try:
+                if self._mss_instance is None:
+                    self._mss_instance = mss.mss()
+                monitor = self._mss_instance.monitors[0]
+                raw = self._mss_instance.grab(monitor)
+                arr = np.array(raw, dtype=np.uint8)
+                if arr.ndim == 3 and arr.shape[2] == 4:
+                    return arr[:, :, :3].copy()
+                if arr.ndim == 3 and arr.shape[2] == 3:
+                    return cvt_rgb_to_bgr(arr)
+            except Exception:
+                self._mss_failed = True
+                try:
+                    if self._mss_instance is not None:
+                        self._mss_instance.close()
+                except Exception:
+                    pass
+                self._mss_instance = None
+
+        if sys.platform.startswith("linux"):
+            frame = self._grab_via_linux_tool()
+            if frame is not None:
+                return frame
+
+        if pyautogui is not None:
+            try:
+                shot = pyautogui.screenshot()
+                return cvt_rgb_to_bgr(np.array(shot))
+            except Exception:
+                if not self._pyautogui_warned:
+                    self._pyautogui_warned = True
+        return None
+
+    def _grab_via_linux_tool(self) -> np.ndarray | None:
+        import shutil
+        import subprocess
+        import tempfile
+
+        if cv2 is None:
+            return None
+
+        def run_to_png(cmd: list[str]) -> np.ndarray | None:
+            tmp_path: str | None = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="mtga_shot_")
+                os.close(fd)
+                full_cmd = [arg.replace("__OUT__", tmp_path) for arg in cmd]
+                try:
+                    proc = subprocess.run(
+                        full_cmd,
+                        capture_output=True,
+                        timeout=10.0,
+                        check=False,
+                    )
+                except Exception:
+                    return None
+                if proc.returncode != 0:
+                    return None
+                if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                    return None
+                img = cv2.imread(tmp_path, cv2.IMREAD_COLOR)
+                if img is None or img.size == 0:
+                    return None
+                return img
+            finally:
+                if tmp_path is not None:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+
+        if self._linux_tool_cmd is not None:
+            return run_to_png(self._linux_tool_cmd)
+
+        candidates: list[list[str]] = []
+        if shutil.which("grim") is not None:
+            candidates.append(["grim", "__OUT__"])
+        if shutil.which("spectacle") is not None:
+            candidates.append(["spectacle", "-b", "-n", "-f", "-o", "__OUT__"])
+        if shutil.which("gnome-screenshot") is not None:
+            candidates.append(["gnome-screenshot", "-f", "__OUT__"])
+        if shutil.which("scrot") is not None:
+            candidates.append(["scrot", "--overwrite", "-z", "__OUT__"])
+
+        for cmd in candidates:
+            frame = run_to_png(cmd)
+            if frame is not None:
+                self._linux_tool_cmd = cmd
+                return frame
+        return None
 
     def _load_template(self, template_path: str) -> np.ndarray | None:
         normalized = os.path.abspath(template_path)

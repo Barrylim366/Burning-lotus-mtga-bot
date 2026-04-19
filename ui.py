@@ -2929,7 +2929,7 @@ class MTGBotUI(tk.Tk):
             pass
 
         lines = [result.message]
-        lines.append("Required setup: MTGA visible with an exact windowed 1920x1080 client area and Windows display scaling set to 100%.")
+        lines.append("Required setup: MTGA visible with an exact windowed 1920x1080 client area and OS display scaling set to 100%.")
         if result.debug_dir:
             lines.append(f"Debug bundle: {result.debug_dir}")
         messagebox.showerror(
