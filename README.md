@@ -12,9 +12,11 @@ Automated MTGA bot with UI, calibration, account switching, and quest-based deck
 
 MTGA in-game settings (required for all platforms):
 
-- Language: **English**
-- Display mode: **Windowed**
-- Resolution: **1920x1080**
+- `Options -> View Account -> Detailed Logs (Plugin Support)`: **ON**
+  *(the bot reads `Player.log` for its primary state; with detailed logs off it will not function)*
+- `Options -> Video -> Language`: **English**
+- `Options -> Video -> Display Mode`: **Windowed**
+- `Options -> Video -> Resolution`: **1920 x 1080**
 - OS display scaling: **100%**
 
 Input backend:
@@ -182,9 +184,10 @@ Standalone runnable UI example (single file): `burning_lotus_ui_example.py`.
 
 On first launch, the UI asks you to confirm these required settings:
 
-- MTGA language: **English**
-- MTGA display mode: **Windowed**
-- MTGA resolution: **1920x1080**
+- `Options -> View Account -> Detailed Logs (Plugin Support)`: **ON**
+- `Options -> Video -> Language`: **English**
+- `Options -> Video -> Display Mode`: **Windowed**
+- `Options -> Video -> Resolution`: **1920 x 1080**
 - OS display scaling: **100%**
 
 The bot now runs in an out-of-the-box mode using:

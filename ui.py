@@ -1964,12 +1964,20 @@ class MTGBotUI(tk.Tk):
         if self.config_manager.get_first_run_prereq_ack():
             return True
         text = (
-            "Before first start, please apply these required settings in MTGA and your OS:\\n\\n"
-            "1) MTGA language: English\\n"
-            "2) Display mode: Windowed\\n"
-            "3) MTGA resolution: 1920x1080\\n"
-            "4) OS display scaling: 100%\\n\\n"
-            "Click OK only after these settings are applied."
+            "Before first start, please apply these required settings:\n"
+            "\n"
+            "MTGA (Options > View Account):\n"
+            "  • Detailed Logs (Plugin Support): ON\n"
+            "\n"
+            "MTGA (Options > Video):\n"
+            "  • Language: English\n"
+            "  • Display mode: Windowed\n"
+            "  • Resolution: 1920 x 1080\n"
+            "\n"
+            "Operating system:\n"
+            "  • Display scaling: 100%\n"
+            "\n"
+            "Click OK only after all of the above are applied."
         )
         acknowledged = messagebox.askokcancel(
             "First Start Requirements",
