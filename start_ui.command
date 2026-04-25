@@ -3,10 +3,10 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$REPO_DIR/.venv-macos"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_PYTHON="$VENV_DIR/bin/python"
 REQ_FILE="$REPO_DIR/requirements.txt"
 MARKER="$VENV_DIR/.requirements.installed"
+HELPER_FILE="$REPO_DIR/tools/macos_python_helper.sh"
 
 alert_warning() {
   local msg="$1"
@@ -14,28 +14,35 @@ alert_warning() {
   echo "$msg" >&2
 }
 
-tk_install_hint() {
-  local py_ver=""
-  py_ver="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
-  if command -v brew >/dev/null 2>&1 && [ -n "$py_ver" ]; then
-    printf "Homebrew Python ohne Tk erkannt.\nInstalliere Tk passend zu Python %s:\n  brew install python-tk@%s\n\nAlternativ Python direkt von python.org verwenden.\nWenn du die Python-Version wechselst, loesche danach .venv-macos und starte den Launcher erneut." "$py_ver" "$py_ver"
-    return
-  fi
-  printf "Python ohne Tk erkannt.\nInstalliere eine Python-Version mit Tk-Unterstuetzung (empfohlen: python.org Installer).\nWenn du die Python-Version wechselst, loesche danach .venv-macos und starte den Launcher erneut."
-}
-
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  alert_warning "Python 3 nicht gefunden. Bitte Python 3.10 oder neuer installieren: https://www.python.org/downloads/"
+if [ ! -f "$HELPER_FILE" ]; then
+  alert_warning "Hilfsdatei fehlt: tools/macos_python_helper.sh"
   exit 1
 fi
 
-if ! "$PYTHON_BIN" -c "import tkinter" >/dev/null 2>&1; then
-  alert_warning "$(tk_install_hint)"
+# shellcheck source=/dev/null
+. "$HELPER_FILE"
+
+backup_venv() {
+  local backup_dir="$REPO_DIR/.venv-macos-backup-$(date +%Y%m%d-%H%M%S)"
+  mv "$VENV_DIR" "$backup_dir"
+}
+
+venv_has_tk() {
+  [ -x "$VENV_PYTHON" ] && "$VENV_PYTHON" -c "import tkinter" >/dev/null 2>&1
+}
+
+SELECTED_PYTHON="$(select_macos_python || true)"
+if [ -z "$SELECTED_PYTHON" ]; then
+  alert_warning "$(macos_python_install_hint)"
   exit 1
+fi
+
+if [ -d "$VENV_DIR" ] && ! venv_has_tk; then
+  backup_venv
 fi
 
 if [ ! -d "$VENV_DIR" ]; then
-  "$PYTHON_BIN" -m venv "$VENV_DIR" || {
+  "$SELECTED_PYTHON" -m venv "$VENV_DIR" || {
     alert_warning "Konnte virtuelle Umgebung nicht erstellen: $VENV_DIR"
     exit 1
   }
@@ -43,6 +50,11 @@ fi
 
 if [ ! -x "$VENV_PYTHON" ]; then
   alert_warning "Python venv fehlt: .venv-macos/bin/python"
+  exit 1
+fi
+
+if ! venv_has_tk; then
+  alert_warning "Die virtuelle Umgebung hat keine tkinter-Unterstuetzung. Bitte .venv-macos loeschen und den Launcher erneut starten."
   exit 1
 fi
 

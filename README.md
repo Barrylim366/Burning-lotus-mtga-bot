@@ -13,7 +13,7 @@ Automated MTGA bot with UI, calibration, account switching, and quest-based deck
 - MTG Arena installed (Windows: Steam / Wizards installer. macOS: Crossover or compatible. Linux: Wine/Proton via Steam or Lutris.)
 - The launcher scripts install the Python packages from `requirements.txt` automatically (`pyautogui`, `pynput`, `numpy`, `Pillow`, `opencv-python`, `mss`).
 - OS-/Python-level components are still your responsibility:
-  - macOS: a Python build with Tk support (`tkinter`), or Homebrew `python-tk@<python-version>`
+  - macOS: supported path is Python 3.13 with Tk support
   - Linux: `tkinter` plus the window-detection / screenshot tools listed below
 
 MTGA in-game settings (required for all platforms):
@@ -44,15 +44,19 @@ The script creates `.venv` and installs dependencies on first run.
 
 ### macOS
 
-1. Install Python 3.10+.
-   - Recommended: python.org installer (ships with Tk for the UI).
-   - Homebrew also works, but Tk is separate there. Example for Homebrew Python 3.14:
-     `brew install python@3.14 python-tk@3.14`
-2. Double-click `start_ui.command` (or run `./start_ui.command` in Terminal).
-3. macOS permission prompts — grant both to the **Terminal** app you launched from **and** to the Python binary inside `.venv-macos`:
+Supported macOS path: Python 3.13 with Tk.
+
+1. Install one of these:
+   - easiest supported path: Python 3.13 from python.org
+   - Homebrew path: `brew install python@3.13 python-tk@3.13`
+2. Optional preflight check: run `./doctor.command`.
+3. Double-click `start_ui.command` (or run `./start_ui.command` in Terminal).
+   - The launcher prefers Python 3.13 automatically when it is available.
+   - If an old `.venv-macos` was created from a broken Python build without Tk, the launcher recreates it automatically.
+4. macOS permission prompts — grant both to the **Terminal** app you launched from **and** to the Python binary inside `.venv-macos`:
    - `System Settings -> Privacy & Security -> Accessibility` (input control)
    - `System Settings -> Privacy & Security -> Screen Recording` (image matching)
-4. If you switch to a different Python build after the first launch, delete `.venv-macos` once and run the launcher again so the virtual environment is recreated from the working interpreter.
+5. If you want to override the interpreter manually, launch with `PYTHON_BIN=/path/to/python3.13 ./start_ui.command`.
 
 ### Linux
 
