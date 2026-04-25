@@ -5002,7 +5002,8 @@ class Controller(ControllerSecondary):
         return selected_count >= min_req
 
     def __get_target_click_offsets(self) -> list[tuple[int, int]]:
-        # Try a small fan of offsets so we don't accidentally click the library.
+        # Small fan of offsets around the calibrated avatar position. Used for
+        # cases where calibration is just slightly off.
         return [
             (0, 0),
             (-80, 0),
@@ -5012,27 +5013,80 @@ class Controller(ControllerSecondary):
             (-90, 45),
         ]
 
-    def __click_opponent_avatar_with_offset(self, offset: tuple[int, int], tag: str) -> None:
-        base_target, source = self._resolve_opponent_avatar_base(force_reacquire=True)
-        x = int(base_target[0] + offset[0])
-        y = int(base_target[1] + offset[1])
+    def __get_avatar_retry_points(self) -> list[tuple[int, int, str]]:
+        # Primary: arena-relative geometric position. The opponent avatar in
+        # MTGA sits at ~50% of arena width, ~10% from the top — this works
+        # regardless of windowed-mode position because we recompute relative
+        # to the detected arena rect. Fallbacks fan out around that anchor,
+        # then fall back to the calibrated config point as last resort.
+        ordered: list[tuple[int, int, str]] = []
+        arena = self._arena_region
+        if arena is not None:
+            try:
+                ax, ay, aw, ah = (int(arena[0]), int(arena[1]), int(arena[2]), int(arena[3]))
+                grid_specs = [
+                    (0.50, 0.10),  # Primary: top-center.
+                    (0.42, 0.10), (0.58, 0.10),
+                    (0.50, 0.16), (0.50, 0.22),
+                    (0.35, 0.10), (0.65, 0.10),
+                    (0.42, 0.16), (0.58, 0.16),
+                    (0.35, 0.16), (0.65, 0.16),
+                    (0.42, 0.22), (0.58, 0.22),
+                    (0.35, 0.22), (0.65, 0.22),
+                ]
+                for rx, ry in grid_specs:
+                    px = ax + int(aw * rx)
+                    py = ay + int(ah * ry)
+                    ordered.append((px, py, f"arena_grid(rx={rx:.2f},ry={ry:.2f})"))
+            except Exception:
+                pass
+
+        # Fallback to the calibrated point only if arena detection failed or
+        # as a last resort after the geometric grid is exhausted.
+        try:
+            base_target, _ = self._resolve_opponent_avatar_base(force_reacquire=True)
+            bx, by = int(base_target[0]), int(base_target[1])
+            ordered.append((bx, by, "calibrated_base"))
+            for dx, dy in self.__get_target_click_offsets():
+                if dx == 0 and dy == 0:
+                    continue
+                ordered.append((bx + dx, by + dy, f"calibrated_offset({dx},{dy})"))
+        except Exception:
+            pass
+
+        # De-duplicate while preserving order.
+        seen: set[tuple[int, int]] = set()
+        unique: list[tuple[int, int, str]] = []
+        for x, y, label in ordered:
+            key = (x, y)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append((x, y, label))
+        return unique
+
+    def __click_opponent_avatar_at_screen(self, x: int, y: int, label: str, tag: str, *, fast: bool = False) -> None:
         bot_logger.log_info(
-            "OPPONENT_AVATAR click: source={} arena={} raw_base={} mapped_base={} offset={} final=({}, {}) tag={}".format(
-                source,
+            "OPPONENT_AVATAR click: arena={} raw_base={} target=({}, {}) source={} tag={}".format(
                 self._arena_region,
                 self.opponent_avatar_coors,
-                base_target,
-                offset,
                 x,
                 y,
+                label,
                 tag,
             )
         )
         bot_logger.log_click(x, y, tag)
         self.input.move_abs(x, y)
-        time.sleep(0.4)
+        time.sleep(0.15 if fast else 0.4)
         self.input.left_click(1)
-        time.sleep(0.3)
+        time.sleep(0.1 if fast else 0.3)
+
+    def __click_opponent_avatar_with_offset(self, offset: tuple[int, int], tag: str) -> None:
+        base_target, source = self._resolve_opponent_avatar_base(force_reacquire=True)
+        x = int(base_target[0] + offset[0])
+        y = int(base_target[1] + offset[1])
+        self.__click_opponent_avatar_at_screen(x, y, f"{source}+offset{offset}", tag)
 
     def __schedule_target_selection(self, source_id: int | None, reason: str) -> None:
         now = time.time()
@@ -5054,25 +5108,54 @@ class Controller(ControllerSecondary):
                 return True
             return False
 
+        retry_budget_sec = 10.0
+
         def _retry_if_needed():
-            if self.__pending_target_select and self.__is_selecting_targets():
-                delay_remaining = self.__get_delay_timer_remaining()
-                if delay_remaining > 0.05:
-                    threading.Timer(delay_remaining + 0.2, _retry_if_needed).start()
-                    return
-                if _attempt_submit():
-                    return
-                age = time.time() - self.__last_target_select_ts
-                pending = self.__pending_target_select or {}
-                attempts = int(pending.get("attempts", 0))
-                offsets = self.__get_target_click_offsets()
-                if age < 5.0 and attempts < len(offsets):
-                    offset = offsets[attempts]
-                    pending["attempts"] = attempts + 1
-                    self.__pending_target_select = pending
-                    bot_logger.log_info(f"Target still pending, retrying opponent avatar (attempt {attempts + 1})")
-                    self.__click_opponent_avatar_with_offset(offset, f"SELECT_OPPONENT_AVATAR_RETRY_{attempts + 1}")
-                    threading.Timer(0.8, _attempt_submit).start()
+            if self._suppress_selections or self._stop_requested:
+                return
+            pending = self.__pending_target_select
+            if not pending:
+                # Submitted or cleared elsewhere — done.
+                return
+            age = time.time() - self.__last_target_select_ts
+            if age >= retry_budget_sec:
+                bot_logger.log_info(
+                    "Target retry abandoned: budget elapsed ({:.1f}s) attempts={}".format(
+                        age, pending.get("attempts", 0)
+                    )
+                )
+                return
+            # Note: do NOT gate on __get_delay_timer_remaining here — that value
+            # comes from the last GameStateMessage snapshot and does not tick
+            # forward without a new TimerStateMessage, so it would lock out
+            # retries indefinitely. The initial start_delay before _do_click
+            # already covers MTGA's pre-target animation window.
+            if _attempt_submit():
+                return
+            points = pending.get("retry_points")
+            if not points:
+                points = self.__get_avatar_retry_points()
+                pending["retry_points"] = points
+                self.__pending_target_select = pending
+            attempts = int(pending.get("attempts", 0))
+            if attempts >= len(points):
+                bot_logger.log_info(
+                    "Target retry abandoned: candidate points exhausted (attempts={})".format(attempts)
+                )
+                return
+            x, y, label = points[attempts]
+            pending["attempts"] = attempts + 1
+            self.__pending_target_select = pending
+            bot_logger.log_info(
+                "Target still pending, retrying opponent avatar (attempt {}/{}, {})".format(
+                    attempts + 1, len(points), label
+                )
+            )
+            self.__click_opponent_avatar_at_screen(
+                x, y, label, f"SELECT_OPPONENT_AVATAR_RETRY_{attempts + 1}", fast=True
+            )
+            threading.Timer(0.5, _attempt_submit).start()
+            threading.Timer(0.7, _retry_if_needed).start()
 
         def _do_click():
             if self._suppress_selections or self._stop_requested:
@@ -5080,11 +5163,17 @@ class Controller(ControllerSecondary):
             if _attempt_submit():
                 return
             pending = self.__pending_target_select or {}
+            points = self.__get_avatar_retry_points()
+            pending["retry_points"] = points
             pending["attempts"] = 1
             self.__pending_target_select = pending
-            self.__click_opponent_avatar_with_offset((0, 0), "SELECT_OPPONENT_AVATAR")
-            threading.Timer(0.8, _attempt_submit).start()
-            threading.Timer(1.2, _retry_if_needed).start()
+            if points:
+                x, y, label = points[0]
+                self.__click_opponent_avatar_at_screen(x, y, label, "SELECT_OPPONENT_AVATAR")
+            else:
+                self.__click_opponent_avatar_with_offset((0, 0), "SELECT_OPPONENT_AVATAR")
+            threading.Timer(0.7, _attempt_submit).start()
+            threading.Timer(1.0, _retry_if_needed).start()
 
         delay_remaining = self.__get_delay_timer_remaining()
         start_delay = 0.8
