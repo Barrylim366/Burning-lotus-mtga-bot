@@ -321,7 +321,7 @@ class ArenaRegionProvider:
                 continue
             region = (int(ox), int(oy), int(rect.w), int(rect.h))
             matched_anchor, checks = self._verify_region_with_any_anchor(region, refresh_capture=False)
-            verify_checks.append({"origin": [int(ox), int(oy)], "matched_anchor": matched_anchor})
+            verify_checks.append({"origin": [int(ox), int(oy)], "matched_anchor": matched_anchor, "checks": checks})
             if matched_anchor is not None:
                 diagnostics["verification"] = verify_checks
                 return ArenaDetectionResult(

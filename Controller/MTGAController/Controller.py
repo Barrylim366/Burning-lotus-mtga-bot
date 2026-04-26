@@ -600,10 +600,6 @@ class Controller(ControllerSecondary):
     def _ensure_arena_region(self, force_reacquire: bool = False) -> tuple[int, int, int, int] | None:
         arena = None
         if force_reacquire:
-            arena = self._get_reusable_cached_arena_region("reacquire")
-            if arena is not None:
-                self._arena_region = arena
-                return arena
             arena = self._arena_region_provider.reacquire()
         elif self._arena_region is None:
             arena = self._arena_region_provider.acquire()
@@ -625,14 +621,14 @@ class Controller(ControllerSecondary):
 
         self._arena_region = None
         if self._should_reuse_cached_arena_region():
-            cached = self._last_good_arena_region
+            cached = self._get_reusable_cached_arena_region("reacquire" if force_reacquire else "acquire")
             if cached is not None:
                 self._log_missing_arena_region(
                     "reacquire" if force_reacquire else "acquire",
                     reuse_cached=True,
                 )
                 self._arena_region = cached
-                return self._arena_region
+                return cached
 
         self._log_missing_arena_region(
             "reacquire" if force_reacquire else "acquire",
@@ -659,7 +655,6 @@ class Controller(ControllerSecondary):
             bot_logger.log_info(
                 f"Arena region {context}: reusing cached arena_region={arena} age={age:.1f}s during active gameplay."
             )
-        self._remember_arena_region(arena)
         return arena
 
     def _remember_arena_region(self, arena: tuple[int, int, int, int] | None) -> None:

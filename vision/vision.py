@@ -41,7 +41,8 @@ class VisionEngine:
         self._cv2_warned = False
         self._pyautogui_warned = False
         self._mss_instance = None
-        self._mss_failed = False
+        self._mss_failed_until = 0.0
+        self._mss_consecutive_invalid = 0
         self._linux_tool_cmd: list[str] | None = None
         self._logical_screen_size: tuple[int, int] | None = None
 
@@ -164,7 +165,7 @@ class VisionEngine:
         return False
 
     def _grab_full_frame(self) -> np.ndarray | None:
-        if mss is not None and not self._mss_failed:
+        if mss is not None and time.time() >= self._mss_failed_until:
             try:
                 if self._mss_instance is None:
                     self._mss_instance = mss.mss()
@@ -174,15 +175,17 @@ class VisionEngine:
                 if arr.ndim == 3 and arr.shape[2] == 4:
                     frame = self._normalize_frame_to_logical_size(arr[:, :, :3].copy())
                     if not self._is_invalid_linux_wayland_capture_frame(frame):
+                        self._mss_consecutive_invalid = 0
                         return frame
-                    self._disable_mss_capture()
+                    self._record_invalid_mss_capture()
                 if arr.ndim == 3 and arr.shape[2] == 3:
                     frame = self._normalize_frame_to_logical_size(cvt_rgb_to_bgr(arr))
                     if not self._is_invalid_linux_wayland_capture_frame(frame):
+                        self._mss_consecutive_invalid = 0
                         return frame
-                    self._disable_mss_capture()
+                    self._record_invalid_mss_capture()
             except Exception:
-                self._disable_mss_capture()
+                self._suspend_mss_capture()
 
         if sys.platform.startswith("linux"):
             frame = self._grab_via_linux_tool()
@@ -218,12 +221,16 @@ class VisionEngine:
             return True
         return bool(os.environ.get("WAYLAND_DISPLAY"))
 
-    def _disable_mss_capture(self) -> None:
-        self._mss_failed = True
+    def _record_invalid_mss_capture(self) -> None:
+        self._mss_consecutive_invalid += 1
+        self._suspend_mss_capture()
+
+    def _suspend_mss_capture(self, cooldown_sec: float = 30.0) -> None:
+        self._mss_failed_until = time.time() + max(1.0, float(cooldown_sec))
         try:
             if self._mss_instance is not None:
                 self._mss_instance.close()
-        except Exception:
+        except Exception:  # best-effort cleanup only
             pass
         self._mss_instance = None
 
