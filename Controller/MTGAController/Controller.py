@@ -1445,6 +1445,40 @@ class Controller(ControllerSecondary):
         bot_logger.log_error(f"{label}: image not found within {timeout:.1f}s")
         return None
 
+    def _click_image_in_scaled_arena_region(
+        self,
+        image_path: str,
+        label: str,
+        *,
+        rel_region: tuple[int, int, int, int],
+        confidence: float = 0.82,
+        timeout: float = 1.5,
+    ) -> bool:
+        arena = self._get_ui_action_arena_region(force_reacquire=True, label=label)
+        if arena is None:
+            return False
+        region = self._scale_base_region_to_arena(arena, rel_region)
+        point = self._locate_image_center(
+            image_path,
+            f"{label}_LOCATE",
+            confidence=confidence,
+            timeout=min(timeout, 1.0),
+            region=region,
+        )
+        if point is None:
+            point = self._locate_image_center_in_rescaled_region(
+                image_path,
+                f"{label}_RESCALED",
+                region=region,
+                normalized_size=(int(rel_region[2]), int(rel_region[3])),
+                confidence=confidence,
+                timeout=timeout,
+            )
+        if point is None:
+            return False
+        self._click_abs(point[0], point[1], label)
+        return True
+
     def _get_log_size(self, path: str) -> int:
         try:
             return int(os.path.getsize(path))
@@ -2683,12 +2717,24 @@ class Controller(ControllerSecondary):
         submit_img = os.path.join(self._buttons_dir(), "submit_btn.png")
         okay_img = os.path.join(self._buttons_dir(), "okay_btn.png")
         if os.path.exists(submit_img):
-            if self._click_image(submit_img, "SUBMIT_SELECTION_IMG", confidence=0.82, timeout=1.5):
+            if self._click_image_in_scaled_arena_region(
+                submit_img,
+                "SUBMIT_SELECTION_IMG",
+                rel_region=(1320, 720, 600, 320),
+                confidence=0.82,
+                timeout=1.5,
+            ) or self._click_image(submit_img, "SUBMIT_SELECTION_IMG", confidence=0.82, timeout=1.5):
                 self.__last_submit_selection_ts = time.time()
                 return True
             # submit_btn not on screen — try okay_btn as fallback (e.g. combat confirm)
             if os.path.exists(okay_img):
-                if self._click_image(okay_img, "SUBMIT_OKAY_FALLBACK_IMG", confidence=0.82, timeout=1.5):
+                if self._click_image_in_scaled_arena_region(
+                    okay_img,
+                    "SUBMIT_OKAY_FALLBACK_IMG",
+                    rel_region=(1320, 720, 600, 320),
+                    confidence=0.82,
+                    timeout=1.5,
+                ) or self._click_image(okay_img, "SUBMIT_OKAY_FALLBACK_IMG", confidence=0.82, timeout=1.5):
                     bot_logger.log_info("SUBMIT_SELECTION: submit_btn not found, clicked okay_btn as fallback")
                     self.__last_submit_selection_ts = time.time()
                     return True
@@ -3202,11 +3248,32 @@ class Controller(ControllerSecondary):
 
     def __click_concede_and_confirm(self, concede_target: tuple, label: str) -> None:
         """Click the Concede button then click the OK confirmation dialog."""
-        self.input.move_abs(concede_target[0], concede_target[1])
-        time.sleep(0.1)
-        self.input.left_click(1)
+        concede_img = os.path.join(self._buttons_dir(), "concede.png")
+        clicked_concede = False
+        if os.path.exists(concede_img):
+            clicked_concede = self._click_image_in_scaled_arena_region(
+                concede_img,
+                f"{label}_CONCEDE_IMG",
+                rel_region=(640, 500, 640, 220),
+                confidence=0.80,
+                timeout=1.5,
+            )
+        if not clicked_concede:
+            self.input.move_abs(concede_target[0], concede_target[1])
+            time.sleep(0.1)
+            self.input.left_click(1)
         time.sleep(1.5)
-        # Click OK/confirm dialog — appears roughly at arena center+offset
+        okay_img = os.path.join(self._buttons_dir(), "okay_btn.png")
+        if os.path.exists(okay_img):
+            if self._click_image_in_scaled_arena_region(
+                okay_img,
+                f"{label}_OKAY_IMG",
+                rel_region=(700, 430, 520, 260),
+                confidence=0.82,
+                timeout=1.5,
+            ):
+                return
+        # Click OK/confirm dialog — falls back to arena center if template search misses
         arena = self._arena_region
         if arena is not None:
             ok_x, ok_y = self._map_base_point_into_arena(arena, (960, 540))
