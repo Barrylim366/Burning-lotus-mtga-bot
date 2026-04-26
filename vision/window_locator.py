@@ -315,11 +315,12 @@ class ArenaRegionProvider:
                 candidate_origins.append(origin)
 
         verify_checks: list[dict[str, Any]] = []
+        self._vision.begin_tick()
         for ox, oy in candidate_origins:
             if ox < 0 or oy < 0:
                 continue
             region = (int(ox), int(oy), int(rect.w), int(rect.h))
-            matched_anchor, checks = self._verify_region_with_any_anchor(region)
+            matched_anchor, checks = self._verify_region_with_any_anchor(region, refresh_capture=False)
             verify_checks.append({"origin": [int(ox), int(oy)], "matched_anchor": matched_anchor})
             if matched_anchor is not None:
                 diagnostics["verification"] = verify_checks
@@ -730,9 +731,12 @@ class ArenaRegionProvider:
     def _verify_region_with_any_anchor(
         self,
         region: tuple[int, int, int, int],
+        *,
+        refresh_capture: bool = True,
     ) -> tuple[str | None, list[dict[str, Any]]]:
         checks: list[dict[str, Any]] = []
-        self._vision.begin_tick()
+        if refresh_capture:
+            self._vision.begin_tick()
         for spec in _ANCHOR_SPECS:
             template_path = os.path.join(self._assets_dir, str(spec["name"]))
             if not os.path.exists(template_path):

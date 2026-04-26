@@ -172,17 +172,17 @@ class VisionEngine:
                 raw = self._mss_instance.grab(monitor)
                 arr = np.array(raw, dtype=np.uint8)
                 if arr.ndim == 3 and arr.shape[2] == 4:
-                    return self._normalize_frame_to_logical_size(arr[:, :, :3].copy())
+                    frame = self._normalize_frame_to_logical_size(arr[:, :, :3].copy())
+                    if not self._is_invalid_linux_wayland_capture_frame(frame):
+                        return frame
+                    self._disable_mss_capture()
                 if arr.ndim == 3 and arr.shape[2] == 3:
-                    return self._normalize_frame_to_logical_size(cvt_rgb_to_bgr(arr))
+                    frame = self._normalize_frame_to_logical_size(cvt_rgb_to_bgr(arr))
+                    if not self._is_invalid_linux_wayland_capture_frame(frame):
+                        return frame
+                    self._disable_mss_capture()
             except Exception:
-                self._mss_failed = True
-                try:
-                    if self._mss_instance is not None:
-                        self._mss_instance.close()
-                except Exception:
-                    pass
-                self._mss_instance = None
+                self._disable_mss_capture()
 
         if sys.platform.startswith("linux"):
             frame = self._grab_via_linux_tool()
@@ -192,11 +192,40 @@ class VisionEngine:
         if pyautogui is not None:
             try:
                 shot = pyautogui.screenshot()
-                return self._normalize_frame_to_logical_size(cvt_rgb_to_bgr(np.array(shot)))
+                frame = self._normalize_frame_to_logical_size(cvt_rgb_to_bgr(np.array(shot)))
+                if not self._is_invalid_linux_wayland_capture_frame(frame):
+                    return frame
             except Exception:
                 if not self._pyautogui_warned:
                     self._pyautogui_warned = True
         return None
+
+    def _is_invalid_linux_wayland_capture_frame(self, frame: np.ndarray | None) -> bool:
+        if frame is None or frame.size == 0:
+            return False
+        if not sys.platform.startswith("linux"):
+            return False
+        if not self._is_linux_wayland_session():
+            return False
+        # On KDE/Wayland, some backends can return a correctly sized all-black
+        # frame. Treat that as a failed capture so the next backend can run.
+        return int(np.max(frame)) == 0
+
+    def _is_linux_wayland_session(self) -> bool:
+        if not sys.platform.startswith("linux"):
+            return False
+        if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+            return True
+        return bool(os.environ.get("WAYLAND_DISPLAY"))
+
+    def _disable_mss_capture(self) -> None:
+        self._mss_failed = True
+        try:
+            if self._mss_instance is not None:
+                self._mss_instance.close()
+        except Exception:
+            pass
+        self._mss_instance = None
 
     def _normalize_frame_to_logical_size(self, frame: np.ndarray) -> np.ndarray:
         if frame is None or frame.size == 0 or cv2 is None or sys.platform != "darwin" or pyautogui is None:
@@ -253,6 +282,8 @@ class VisionEngine:
                     return None
                 img = cv2.imread(tmp_path, cv2.IMREAD_COLOR)
                 if img is None or img.size == 0:
+                    return None
+                if self._is_invalid_linux_wayland_capture_frame(img):
                     return None
                 return img
             finally:

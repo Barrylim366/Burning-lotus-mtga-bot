@@ -313,6 +313,7 @@ class Controller(ControllerSecondary):
         self._last_good_arena_region: tuple[int, int, int, int] | None = None
         self._last_good_arena_region_ts = 0.0
         self._arena_region_missing_logged_ts = 0.0
+        self._arena_region_cached_reuse_logged_ts = 0.0
         self._hand_select_debug_logged_ts = 0.0
         self._arena_correction_xy: tuple[int, int] = (0, 0)
         self._logout_play_origin: tuple[int, int] | None = None
@@ -599,6 +600,10 @@ class Controller(ControllerSecondary):
     def _ensure_arena_region(self, force_reacquire: bool = False) -> tuple[int, int, int, int] | None:
         arena = None
         if force_reacquire:
+            arena = self._get_reusable_cached_arena_region("reacquire")
+            if arena is not None:
+                self._arena_region = arena
+                return arena
             arena = self._arena_region_provider.reacquire()
         elif self._arena_region is None:
             arena = self._arena_region_provider.acquire()
@@ -634,6 +639,28 @@ class Controller(ControllerSecondary):
             reuse_cached=False,
         )
         return None
+
+    def _get_reusable_cached_arena_region(self, context: str) -> tuple[int, int, int, int] | None:
+        cached = self._arena_region or self._last_good_arena_region
+        if cached is None:
+            return None
+        if not self._should_reuse_cached_arena_region():
+            return None
+        try:
+            arena = (int(cached[0]), int(cached[1]), int(cached[2]), int(cached[3]))
+        except Exception:
+            return None
+        if arena[2] <= 0 or arena[3] <= 0:
+            return None
+        age = max(0.0, time.time() - self._last_good_arena_region_ts)
+        now = time.time()
+        if (now - self._arena_region_cached_reuse_logged_ts) >= 1.0:
+            self._arena_region_cached_reuse_logged_ts = now
+            bot_logger.log_info(
+                f"Arena region {context}: reusing cached arena_region={arena} age={age:.1f}s during active gameplay."
+            )
+        self._remember_arena_region(arena)
+        return arena
 
     def _remember_arena_region(self, arena: tuple[int, int, int, int] | None) -> None:
         if arena is None:
