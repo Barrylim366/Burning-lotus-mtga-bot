@@ -1185,12 +1185,14 @@ class Controller(ControllerSecondary):
         if not os.path.exists(template):
             return None
         try:
-            self._vision.begin_tick()
-            full = self._vision.capture(None)
-            if full is None:
-                return None
-            match = self._vision.find_template(full, template, threshold=0.80)
-            if match is None:
+            point = self._locate_image_center_in_scaled_arena_region(
+                template,
+                "LOGOUT_PLAY_BTN_ORIGIN",
+                rel_region=None,
+                confidence=0.80,
+                timeout=1.0,
+            )
+            if point is None:
                 return None
             qrel = self._get_logout_target_relative_1920(
                 config_key="queue_button",
@@ -1201,9 +1203,9 @@ class Controller(ControllerSecondary):
                 if default_q is None:
                     return None
                 qrel = (int(default_q[0]), int(default_q[1]))
-            origin = (int(match.x - qrel[0]), int(match.y - qrel[1]))
+            origin = (int(point[0] - qrel[0]), int(point[1] - qrel[1]))
             bot_logger.log_info(
-                f"Logout mapping: play_btn template origin={origin} match=({match.x},{match.y}) qrel={qrel} score={match.score:.3f}"
+                f"Logout mapping: play_btn template origin={origin} match={point} qrel={qrel}"
             )
             return origin
         except Exception as e:
@@ -1445,19 +1447,24 @@ class Controller(ControllerSecondary):
         bot_logger.log_error(f"{label}: image not found within {timeout:.1f}s")
         return None
 
-    def _click_image_in_scaled_arena_region(
+    def _locate_image_center_in_scaled_arena_region(
         self,
         image_path: str,
         label: str,
         *,
-        rel_region: tuple[int, int, int, int],
+        rel_region: tuple[int, int, int, int] | None = None,
         confidence: float = 0.82,
         timeout: float = 1.5,
-    ) -> bool:
+    ) -> tuple[int, int] | None:
         arena = self._get_ui_action_arena_region(force_reacquire=True, label=label)
         if arena is None:
-            return False
-        region = self._scale_base_region_to_arena(arena, rel_region)
+            return None
+        if rel_region is None:
+            region = tuple(int(v) for v in arena)
+            normalized_size = (1920, 1080)
+        else:
+            region = self._scale_base_region_to_arena(arena, rel_region)
+            normalized_size = (int(rel_region[2]), int(rel_region[3]))
         point = self._locate_image_center(
             image_path,
             f"{label}_LOCATE",
@@ -1465,15 +1472,33 @@ class Controller(ControllerSecondary):
             timeout=min(timeout, 1.0),
             region=region,
         )
-        if point is None:
-            point = self._locate_image_center_in_rescaled_region(
-                image_path,
-                f"{label}_RESCALED",
-                region=region,
-                normalized_size=(int(rel_region[2]), int(rel_region[3])),
-                confidence=confidence,
-                timeout=timeout,
-            )
+        if point is not None:
+            return point
+        return self._locate_image_center_in_rescaled_region(
+            image_path,
+            f"{label}_RESCALED",
+            region=region,
+            normalized_size=normalized_size,
+            confidence=confidence,
+            timeout=timeout,
+        )
+
+    def _click_image_in_scaled_arena_region(
+        self,
+        image_path: str,
+        label: str,
+        *,
+        rel_region: tuple[int, int, int, int] | None = None,
+        confidence: float = 0.82,
+        timeout: float = 1.5,
+    ) -> bool:
+        point = self._locate_image_center_in_scaled_arena_region(
+            image_path,
+            label,
+            rel_region=rel_region,
+            confidence=confidence,
+            timeout=timeout,
+        )
         if point is None:
             return False
         self._click_abs(point[0], point[1], label)
@@ -1874,16 +1899,22 @@ class Controller(ControllerSecondary):
             find_btn = os.path.join(buttons_dir, "find_match_btn.png")
             hist_btn = os.path.join(buttons_dir, "hist_play_btn.png")
             decks_btn = os.path.join(buttons_dir, "my_decks.png")
-            if not self._click_image(play_btn, "POST_LOGIN_PLAY"):
+            if not self._click_image_in_scaled_arena_region(
+                play_btn,
+                "POST_LOGIN_PLAY",
+                rel_region=(1160, 680, 740, 360),
+                confidence=0.80,
+                timeout=1.5,
+            ) and not self._click_image(play_btn, "POST_LOGIN_PLAY"):
                 return False
             time.sleep(1.0)
-            if not self._click_image(find_btn, "POST_LOGIN_FIND_MATCH"):
+            if not self._click_image_in_scaled_arena_region(find_btn, "POST_LOGIN_FIND_MATCH", rel_region=None, confidence=0.80, timeout=1.5) and not self._click_image(find_btn, "POST_LOGIN_FIND_MATCH"):
                 return False
             time.sleep(1.0)
-            if not self._click_image(hist_btn, "POST_LOGIN_HIST_PLAY"):
+            if not self._click_image_in_scaled_arena_region(hist_btn, "POST_LOGIN_HIST_PLAY", rel_region=None, confidence=0.80, timeout=1.5) and not self._click_image(hist_btn, "POST_LOGIN_HIST_PLAY"):
                 return False
             time.sleep(1.0)
-            if not self._click_image(decks_btn, "POST_LOGIN_MY_DECKS"):
+            if not self._click_image_in_scaled_arena_region(decks_btn, "POST_LOGIN_MY_DECKS", rel_region=None, confidence=0.80, timeout=1.5) and not self._click_image(decks_btn, "POST_LOGIN_MY_DECKS"):
                 return False
             time.sleep(1.0)
 
@@ -1918,7 +1949,13 @@ class Controller(ControllerSecondary):
             )
 
         time.sleep(1.0)
-        if not self._click_image(play_btn, "POST_LOGIN_PLAY_CONFIRM"):
+        if not self._click_image_in_scaled_arena_region(
+            play_btn,
+            "POST_LOGIN_PLAY_CONFIRM",
+            rel_region=(1160, 680, 740, 360),
+            confidence=0.80,
+            timeout=1.5,
+        ) and not self._click_image(play_btn, "POST_LOGIN_PLAY_CONFIRM"):
             return False
 
         bot_logger.log_info(f"Post-login: deck selected ({os.path.basename(selected_deck)}) and play clicked.")
@@ -1944,15 +1981,17 @@ class Controller(ControllerSecondary):
         if arena is not None:
             queue_template = os.path.join(self._buttons_dir(), "play_btn.png")
             if os.path.exists(queue_template):
-                template_roi = self._scale_base_region_to_arena(arena, (1160, 680, 740, 360))
-                self._vision.begin_tick()
-                roi_img = self._vision.capture(template_roi)
-                if roi_img is not None:
-                    match = self._vision.find_template(roi_img, queue_template, threshold=0.80)
-                    if match is not None:
-                        target = (int(template_roi[0] + match.x), int(template_roi[1] + match.y))
-                        source = f"arena_template_play_btn score={match.score:.3f}"
-                        bot_logger.log_info(f"Queue template hit: click={target} source={source}")
+                template_point = self._locate_image_center_in_scaled_arena_region(
+                    queue_template,
+                    "QUEUE_TEMPLATE_PLAY_BTN",
+                    rel_region=(1160, 680, 740, 360),
+                    confidence=0.80,
+                    timeout=1.0,
+                )
+                if template_point is not None:
+                    target = template_point
+                    source = "arena_template_play_btn"
+                    bot_logger.log_info(f"Queue template hit: click={target} source={source}")
             try:
                 if source == "absolute_click_target":
                     mapped, mapped_source = self._map_abs_point_to_arena(
@@ -4115,9 +4154,15 @@ class Controller(ControllerSecondary):
         time.sleep(0.15)
         self._click_abs(int(log_out_target[0]), int(log_out_target[1]), "LOG_OUT_BTN")
         time.sleep(0.8)
-        if self._click_logout_image_if_visible(
+        if self._click_image_in_scaled_arena_region(
+            os.path.join(self._buttons_dir(), "log_out_btn.png"),
+            "LOG_OUT_BTN_IMG",
+            rel_region=None,
+            confidence=0.84,
+            timeout=1.2,
+        ) or self._click_logout_image_if_visible(
             "log_out_btn.png",
-            label="LOG_OUT_BTN_IMG",
+            label="LOG_OUT_BTN_IMG_FALLBACK",
             confidence=0.84,
             timeout_sec=1.2,
             region=self._region_around_point(log_out_target, width=520, height=260),
@@ -4142,9 +4187,15 @@ class Controller(ControllerSecondary):
         time.sleep(0.35)
         self._click_abs(int(log_out_ok_target[0]), int(log_out_ok_target[1]), "LOG_OUT_OK_BTN")
         time.sleep(0.5)
-        self._click_logout_image_if_visible(
+        self._click_image_in_scaled_arena_region(
+            os.path.join(self._buttons_dir(), "okay_btn.png"),
+            "LOG_OUT_OK_IMG",
+            rel_region=None,
+            confidence=0.86,
+            timeout=0.9,
+        ) or self._click_logout_image_if_visible(
             "okay_btn.png",
-            label="LOG_OUT_OK_IMG",
+            label="LOG_OUT_OK_IMG_FALLBACK",
             confidence=0.86,
             timeout_sec=0.9,
             region=self._region_around_point(log_out_ok_target, width=420, height=220),
