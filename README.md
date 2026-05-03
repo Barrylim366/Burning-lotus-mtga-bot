@@ -95,7 +95,7 @@ Windows quick test for built-in account switch flow (without starting a full mat
 - It runs the current built-in full account-switch path from code (logout + login + post-login handling).
 - For logout-only testing, run: `python tools/test_builtin_logout.py`
 - The active controller flow in `Controller/MTGAController/Controller.py` again includes queue spam, post-match dismissal, and built-in account switching as one continuous runtime path.
-- Account switching now follows the `macOS_Version` logout order again: recorded logout replay first, then `ESC -> LOG_OUT_BTN -> LOG_OUT_OK_BTN` fallback. On Windows, those fallback targets are still mapped through the detected `arena_region` so the sequence stays window-relative instead of clicking raw desktop coordinates.
+- Account switching uses recorded logout replay first, then `ESC -> LOG_OUT_BTN -> LOG_OUT_OK_BTN` as fallback. Fallback targets are mapped through the detected `arena_region` so the sequence stays window-relative instead of clicking raw desktop coordinates.
 - The account-switch flow now verifies logout via fresh `Player.log` login-screen markers before typing credentials. If logout does not actually reach the login screen, the switch aborts with a debug bundle instead of typing into the still-open home/options UI. The built-in fallback also retries visible `log_out_btn.png` / `okay_btn.png` templates before giving up.
 - Post-match dismiss and other home/options UI actions now use the detected MTGA window center or the last good cached `arena_region` as fallback. This avoids raw desktop clicks like `(1280, 720)` when the Arena window is shifted on the monitor.
 - Logout confirm (`OK`) no longer relies on full-screen `okay_btn.png` matching first. The mapped `log_out_ok_btn` click now has priority, and any image-based confirmation retry is limited to a small region around the expected dialog button to avoid false positives on the Home/Play button.
@@ -380,7 +380,6 @@ Fallback:
 - Startup validation now requires an existing `Player.log`:
   - UI startup prompts for manual file selection if auto-detection fails.
   - CLI startup (`run_bot.py`) exits early with a clear error if the file does not exist.
-- Windows fork preset: `runtime/config/calibration_config.json` keeps `log_path` at `C:/Users/giaco/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log`.
 - Hover logs are suppressed by default and only enabled during selection scans.
 - A one-line match summary is logged at match completion.
 - Startup diagnostics now include:
