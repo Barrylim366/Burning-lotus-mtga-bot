@@ -1,13 +1,14 @@
 # Burning Lotus Bot
 <img width="429" height="823" alt="githubscreen" src="https://github.com/user-attachments/assets/ac3ec57b-45de-4a22-aebe-0bcb3db90ae0" />
 
+
 Automated MTGA bot for Quests and daylie wins with UI, account switching feature, and quest-based deck selection. Feel free to inspect the code, request a new feature/report a bug via Github Issue or open a pull request.
 ## Requirements
 
 - **OS**: Windows 10/11, macOS 12+, or Linux (X11 or Wayland; tested on Debian and CachyOS)
 - Python 3.10+
 - MTG Arena installed (Windows: Steam / Wizards installer. macOS: Crossover or compatible. Linux: Wine/Proton via Steam or Lutris.)
-- The launcher scripts install the Python packages from `requirements.txt` automatically (`pyautogui`, `pynput`, `numpy`, `Pillow`, `opencv-python`, `mss`).
+- The launcher scripts install the Python packages from `requirements.txt` automatically (`pyautogui` for mouse/keyboard input, `pynput` as listener for user inputs, `numpy`, `Pillow` for UI things, `opencv-python` for template matching, `mss` as dedicated screenshot library).
 - OS-/Python-level components are still your responsibility:
   - macOS: supported path is Python 3.13 with Tk support
   - Linux: `tkinter` plus the window-detection / screenshot tools listed below
