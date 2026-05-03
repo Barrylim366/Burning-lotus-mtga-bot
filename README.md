@@ -1,11 +1,7 @@
 # Burning Lotus Bot
 <img width="429" height="823" alt="githubscreen" src="https://github.com/user-attachments/assets/ac3ec57b-45de-4a22-aebe-0bcb3db90ae0" />
 
-## Support
-[elitepvpers](https://www.elitepvpers.com/)
-
-Automated MTGA bot with UI, calibration, account switching, and quest-based deck selection.
-
+Automated MTGA bot for Quests and daylie wins with UI, account switching feature, and quest-based deck selection. Feel free to inspect the code, request a new feature/report a bug via Github Issue or open a pull request.
 ## Requirements
 
 - **OS**: Windows 10/11, macOS 12+, or Linux (X11 or Wayland; tested on Debian and CachyOS)
@@ -19,7 +15,7 @@ Automated MTGA bot with UI, calibration, account switching, and quest-based deck
 MTGA in-game settings (required for all platforms):
 
 - `Options -> View Account -> Detailed Logs (Plugin Support)`: **ON**
-  *(the bot reads `Player.log` for its primary state; with detailed logs off it will not function)*
+  *(the bot reads a`Player.log` for its primary state; with detailed logs off it will not function)*
 - `Options -> Video -> Language`: **English**
 - `Options -> Video -> Display Mode`: **Windowed**
 - `Options -> Video -> Resolution`: **any exact 16:9 windowed size**
@@ -437,3 +433,5 @@ Bundle contents:
 - `arena_region.png` (captured MTGA window region)
 - `full_screen.png` (full-screen capture)
 
+## See also on
+[elitepvpers](https://www.elitepvpers.com/)
