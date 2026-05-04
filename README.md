@@ -21,7 +21,7 @@ Python dependencies are installed automatically by the launcher scripts:
 | `mss` | Fast screen capture |
 | `opencv-python` | Template matching |
 | `Pillow` | UI rendering |
-| `numpy` | Image processing |
+| `numpy` | Numerical arrays (shared data format between mss and OpenCV) |
 
 ### Required MTGA settings (all platforms)
 
